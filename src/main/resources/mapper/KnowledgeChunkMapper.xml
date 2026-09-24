@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+    知识切片表的 BM25 相关 SQL。
+
+    这些查询无法用 MyBatis-Plus 的条件构造器表达（全文索引匹配、聚合统计），
+    按项目约定放在 XML 里，便于统一审阅与调优。
+-->
+<mapper namespace="com.mewchat.dao.mysql.mapper.KnowledgeChunkMapper">
+
+    <!-- 单表查询统一显式列名，不写 SELECT *：实体新增字段时不会影响已有查询的列序 -->
+    <sql id="baseColumns">
+        id, doc_id, chunk_no, content, char_start, char_end, content_length, create_time
+    </sql>
+
+    <!--
+        关键词候选召回。
+        MATCH ... AGAINST 使用 knowledge_chunk 上的 ngram 全文索引
+        （sql/02_knowledge_chunk.sql 中 WITH PARSER ngram 声明），
+        因此这里能对中文按 2-gram 匹配。
+
+        注意 BOOLEAN MODE 下多个词默认是 OR 关系，召回面偏大是有意为之：
+        召回阶段追求"不漏"，精排交给 Java 侧的 BM25 与重排器。
+
+        ORDER BY 不能省：命中数超过 limit 时，返回哪 limit 行取决于存储引擎当时的
+        读取顺序，与相关性无关。少了它，真正的依据可能在参与打分之前就被排除在外，
+        而且同一个查询两次可能给出不同的候选集 —— 回答会随之"时好时坏"却无从复现。
+        这里按全文相关性排序取前 limit 行，用的仍是同一个 ngram 全文索引。
+
+        ⚠ InnoDB 全文索引在【事务提交时】才更新，未提交的新插入行对本查询不可见。
+        这意味着：若把"文档入库"与"检索验证"放在同一个大事务里，刚写入的切片会搜不到。
+        生产代码中 DocumentIngestService.ingest() 本身不开启外层事务，
+        写完即提交，所以入库后可以立即检索；但请勿把它包进长事务，
+        否则会出现"入库成功却查不到"的诡异现象。
+    -->
+    <select id="searchByKeyword" resultType="com.mewchat.dao.mysql.entity.KnowledgeChunk">
+        SELECT
+        <include refid="baseColumns"/>
+        FROM knowledge_chunk
+        WHERE MATCH(content) AGAINST (#{booleanQuery} IN BOOLEAN MODE)
+        ORDER BY MATCH(content) AGAINST (#{booleanQuery} IN BOOLEAN MODE) DESC
+        LIMIT #{limit}
+    </select>
+
+    <!--
+        文档频率 df：包含指定词的切片数。
+        同样走全文索引，避免 LIKE '%term%' 的全表扫描。
+    -->
+    <select id="countByTerm" resultType="long">
+        SELECT COUNT(*)
+        FROM knowledge_chunk
+        WHERE MATCH(content) AGAINST (#{term} IN BOOLEAN MODE)
+    </select>
+
+    <!-- 语料总量 N -->
+    <select id="countAllChunks" resultType="long">
+        SELECT COUNT(*)
+        FROM knowledge_chunk
+    </select>
+
+    <!--
+        平均文档长度 avgdl：BM25 用它做长度归一化。
+        用 COALESCE 兜住空表：空表时 AVG 返回 NULL，会直接炸掉 BM25 计算。
+    -->
+    <select id="averageContentLength" resultType="double">
+        SELECT COALESCE(AVG(content_length), 0)
+        FROM knowledge_chunk
+    </select>
+
+</mapper>

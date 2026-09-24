@@ -1,0 +1,318 @@
+# ============================================================
+# MewChat 应用配置
+# 所有配置集中在此，通过 @ConfigurationProperties 绑定到 config 包的配置类
+# ============================================================
+
+server:
+  port: 8080
+  # 只约束"建立连接后等待请求头"的时长，与 SSE 长连接无关（SSE 超时见 mewchat.sse）
+  tomcat:
+    connection-timeout: 120000
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: mewchat
+
+  # ==================== 数据源（MySQL 8.0.34） ====================
+  # 本机 MySQL 装在 E:\mysql\mysql-8.0.34-winx64，以 Windows 服务 "MySQL" 形式注册（默认未启动）
+  # 启动服务需管理员权限：net start MySQL
+  # 首次使用需建库并执行建表脚本：sql/01_schema.sql
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/mewchat?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:root}
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  # 上传知识库文档时用到
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+
+  # ==================== 安全 ====================
+  # 当前由 config.SecurityConfig 全量放行，尚未接入认证。
+  # 默认内存用户已由启动类的 exclude = UserDetailsServiceAutoConfiguration 关闭，
+  # 故此处不配置 spring.security.user —— 配了反而会凭空造出一个可登录的账号。
+
+# ==================== MyBatis-Plus ====================
+mybatis-plus:
+  # 手写 SQL 的 XML 位置，与 dao.mysql.mapper 下接口一一对应
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.mewchat.dao.mysql.entity
+  configuration:
+    # 数据库 snake_case 自动映射到 Java camelCase
+    map-underscore-to-camel-case: true
+    # 开发阶段打印 SQL，上线前改为 org.apache.ibatis.logging.nologging.NoLoggingImpl
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    banner: false
+    db-config:
+      id-type: assign_id
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# ==================== 业务配置 ====================
+mewchat:
+
+  # ---- 认证与鉴权 ----
+  # 对话接口用 Authorization: Bearer <token> 鉴权，令牌自包含、服务端不存会话
+  # （见 config.SecurityConfig 与 common.security.TokenCodec）
+  auth:
+    # 令牌签名密钥。必须通过环境变量提供足够随机的值：
+    # 拿到它就能给任意用户签发令牌，等于拿到整个系统的身份。
+    #
+    # 这里【故意不给默认值】：只要给一个能用的默认值（哪怕是 "dev-only-..." 这种），
+    # 密钥就随仓库一起公开了 —— 任何人 clone 下来就能签出一个 userType=3 的令牌，
+    # 换到 ROLE_ADMIN 访问 /api/admin/**，而应用看起来一切正常。
+    # 留空时 TokenCodec 会在启动阶段直接失败，把问题暴露在部署时而不是被利用后。
+    # 本地启动前先设置：export MEWCHAT_TOKEN_SECRET=<至少 16 位的随机串>
+    #
+    # 注意：改这个值会让所有已签发令牌立即失效（目前唯一的"强制下线"手段）
+    token-secret: ${MEWCHAT_TOKEN_SECRET:}
+    # 令牌有效期（分钟）
+    token-expire-minutes: 120
+
+  # ---- 跨域（前后端分离部署时需配置）----
+  # 留空 = 仅允许同源。不要写 * ：接口靠 Bearer 令牌鉴权，通配来源等于允许任意网站调用
+  cors:
+    allowed-origins: ${MEWCHAT_CORS_ORIGINS:}
+
+  # ---- 大模型：由 config.AiModelConfig 据此构建模型 Bean ----
+  # 注意：本项目已 exclude 掉 LangChain4j 的 OpenAI 自动配置，
+  # 配置项归到本前缀下，写 langchain4j.open-ai.* 不会生效
+  llm:
+    chat:
+      # ---- 预留 API Key 位置：优先读环境变量 LLM_API_KEY ----
+      # 必须非空：模型 Bean 创建时会校验，留空会导致启动失败
+      api-key: ${LLM_API_KEY:sk-REPLACE-WITH-YOUR-REAL-KEY}
+      # 示例值（DeepSeek）。DeepSeek / 通义千问(兼容模式) / 智谱GLM 等均可，
+      # 换厂商只改 base-url 与 model-name，不用改代码
+      base-url: ${LLM_BASE_URL:https://api.deepseek.com/v1}
+      model-name: ${LLM_MODEL:deepseek-chat}
+      # 客服场景要求稳定复现，温度不宜高
+      temperature: 0.3
+      timeout: 60s
+      max-retries: 2
+      # 单次回复最大 token，留空不限制
+      # max-completion-tokens: 2048
+      # 开发期打开便于排查提示词与响应，上线前关掉
+      log-requests: true
+      log-responses: true
+
+    embedding:
+      # 留空则复用 chat 的 api-key 与 base-url
+      api-key: ${LLM_EMBEDDING_API_KEY:}
+      base-url: ${LLM_EMBEDDING_BASE_URL:}
+      # 待选定厂商后填写，例如 text-embedding-3-small
+      model-name: ${LLM_EMBEDDING_MODEL:text-embedding-3-small}
+      # 必须与下方 mewchat.milvus.dimension 完全一致，否则向量写入会失败
+      dimensions: 1024
+      timeout: 60s
+      max-retries: 2
+      log-requests: false
+
+  # ---- Milvus 向量库 ----
+  # SDK 为 milvus-sdk-java 2.5.9，属 2.x 线，服务端请部署 Milvus 2.5.x
+  # 本机尚未部署，故默认关闭；关闭时不创建任何 Milvus Bean，应用照常启动
+  milvus:
+    enabled: ${MILVUS_ENABLED:false}
+    host: ${MILVUS_HOST:localhost}
+    port: ${MILVUS_PORT:19530}
+    # 未开启鉴权的部署留空即可
+    username: ${MILVUS_USERNAME:}
+    password: ${MILVUS_PASSWORD:}
+    # 集合由 MilvusEmbeddingStore 首次使用时自动创建，不要手工预建
+    collection-name: mewchat_knowledge
+    # 必须等于 mewchat.llm.embedding.dimensions
+    dimension: 1024
+    # 取值见 Milvus SDK 的 IndexType 枚举
+    index-type: HNSW
+    # 取值见 Milvus SDK 的 MetricType 枚举，需与向量模型的训练度量一致
+    metric-type: COSINE
+    connect-timeout-ms: 10000
+    # 集合字段名：LangChain4j 只允许自定义这 4 个字段名，无法新增标量字段。
+    # 文档id、段落号等自定义数据放 metadata(JSON)，见 MilvusVectorDao
+    id-field-name: id
+    text-field-name: text
+    metadata-field-name: metadata
+    vector-field-name: vector
+
+  # ---- SSE 流式输出 ----
+  sse:
+    # 异步请求超时，需覆盖一次完整回答（含多轮工具调用）的耗时
+    timeout-ms: 300000
+    core-pool-size: 4
+    max-pool-size: 16
+    queue-capacity: 100
+    thread-name-prefix: mewchat-sse-
+
+  # ---- Agent 编排 ----
+  agent:
+    # 置信度三档闸值：
+    #   ≥ 达标线            → 直接生成回答
+    #   兜底线 ~ 达标线之间 → 放宽召回范围补一次检索，再判一次
+    #   < 兜底线（或补检索后仍不达标）→ 兜底：转人工 + 自动建工单
+    # 达标线调高更谨慎（更多回答被拉去补检索或转人工），调低更容易直接给出没把握的答案
+    high-confidence-threshold: 0.70
+    # 必须小于达标线，否则中档区间无意义 —— 配置写反会导致启动失败
+    low-confidence-threshold: 0.40
+    # 兜底时是否自动建工单。关掉只在联调/压测时用：
+    # 关掉意味着"答不上来"的问题没有任何人接手
+    auto-create-ticket: true
+    # 澄清挂起状态的有效期（分钟）。超期后用户随口回一个"1"不会被续接回旧追问
+    clarify-pending-ttl-minutes: 30
+    # 状态机最大步数。转移表里有一个受控的环（置信度校验 → 补检索 → 置信度校验），
+    # 此项是它的兜底保险：环的终止条件由业务保证（只补检索一次）
+    max-steps: 20
+
+  # ---- 安全护栏 ----
+  # 命中敏感词的输入直接拒答，不送进大模型（见 service.GuardrailService）
+  guardrail:
+    enabled: true
+    # 词表：包含即命中，匹配前会去掉空白与标点（"赌 博"也拦得住）。
+    # 因此**不能放常见单字或常用词** —— 一个"赌"字会把"押金赌博纠纷"这类正常投诉也拦下。
+    # 生产环境应改为配置中心或词库表，接口形状（字符串列表）不变。
+    # 下表的词是电商场景里典型的违规交易试探，仅作示例。
+    sensitive-words:
+      - 刷单
+      - 代刷
+      - 代开发票
+      - 虚假交易
+      - 违禁品
+      - 出售账号
+      - 洗钱
+    # 命中时的固定回复。话术里不能出现命中的那个词，也不说明"因为哪个词被拦下"，
+    # 否则等于把规则边界交出去，会被反复试探
+    reject-reply: "抱歉，您的问题涉及不符合平台规范的内容，我无法回答。如果您有其他问题，我很乐意继续帮您。"
+
+  # ---- RAG 检索 ----
+  rag:
+    # 融合重排后最终送入模型的片段条数
+    top-k: 5
+    # 向量通道相似度下限（COSINE，0~1），低于此值直接丢弃
+    min-score: 0.50
+    # 单通道候选召回倍数：各召回 top-k × 本值 条，再融合重排截断到 top-k。
+    # 召回池必须比最终需求宽，否则正确结果会在一开始就被排除
+    candidate-multiplier: 3
+    # 补充检索的召回倍数：置信度落在中档时编排层会让检索再跑一次，
+    # 这次把最终片段数放大到 top-k × 本值，用更宽的池子把依据补足。
+    # 只补一次（编排层保证）—— 反复放宽到满意为止，等于把置信度变成摆设
+    retry-top-k-multiplier: 2
+    # 单个切片送入模型的最大字符数，防止超长片段挤占上下文
+    max-chunk-chars: 1000
+
+    # BM25 关键词通道
+    bm25:
+      # 词频饱和系数：控制"某词出现多次"的增益上限，1.2 为文献常用值
+      k1: 1.2
+      # 长度归一化系数：0 不归一化、1 完全归一化，0.75 为常用值
+      b: 0.75
+      # 查询词项上限：每个词项要发一次 df 统计查询，必须封顶
+      max-query-terms: 12
+      # 关键词候选条数上限
+      max-candidates: 200
+
+    # RRF 融合
+    rrf:
+      # 平滑参数：越大则各路结果影响越均衡，60 为原论文推荐值
+      k: 60
+
+    # 置信度计算：confidence = top-score-weight×最高分 + count-weight×命中数量因子
+    confidence:
+      top-score-weight: 0.7
+      count-weight: 0.3
+      # 有效片段数达到此值，数量因子拿满分
+      expected-chunk-count: 3
+      # 最终分低于此值的片段不计入有效数量，防止一堆低分片段把置信度抬上去
+      relevance-floor: 0.5
+
+    # 文档分片
+    chunking:
+      # 目标切片长度（字符）：中文场景 400~600 较均衡
+      chunk-size: 500
+      # 相邻切片重叠字符数：不留重叠会导致压在切分点上的句子两边各拿半句
+      overlap: 50
+      # 单切片硬上限：兜住"整段没有标点"的异常输入，也保证不超 Milvus 字段上限
+      max-chunk-size: 1200
+
+  # ---- 定时任务 ----
+  job:
+    session-close:
+      # 会话收尾：关闭空闲会话并生成摘要。这是"长时记忆"的唯一触发源，
+      # 关掉它摘要就不会产生，Agent 会忘记超出短时窗口的早期对话。
+      # 注意本任务会调用大模型，会产生 token 消耗
+      enabled: true
+      # 空闲多久视为会话已结束（分钟）
+      idle-minutes: 30
+      # 单批处理条数上限
+      batch-size: 50
+      # 两次执行间隔（毫秒），默认 10 分钟
+      interval-ms: 600000
+      # 应用启动后首次执行的延迟（毫秒）
+      initial-delay-ms: 60000
+
+    # 问题池聚类（数据飞轮的后半段）：把"问法不同、问的是同一件事"的问题归成簇，
+    # 产出后台的待优化清单。纯本地计算，不调用大模型，没有 token 费用
+    clustering:
+      enabled: true
+      # 单次处理条数上限（聚类是逐个与已有簇比较，必须封顶）
+      batch-size: 500
+      # 相似度阈值（归一化后 2-gram 的 Jaccard 系数）：
+      # 调高更保守（只归并问法几乎一致的），调低更激进（可能把不同问题混进一簇）。
+      # 这个值必须拿真实问题池调，默认值只是起点
+      similarity-threshold: 0.55
+      # 两次执行间隔（毫秒），默认一天
+      interval-ms: 86400000
+      # 启动后首次执行延迟（毫秒），默认 10 分钟（避开启动高峰）
+      initial-delay-ms: 600000
+
+  # ---- 可观测性（Langfuse）----
+  # 上报每轮对话的摘要：token、耗时、检索命中、工具调用、置信度。
+  # 未配置密钥时静默跳过（只提示一次），因此这些默认值可以直接放着不动
+  observability:
+    langfuse:
+      enabled: true
+      host: ${LANGFUSE_HOST:https://cloud.langfuse.com}
+      # 项目公钥与私钥。私钥属凭据，请用环境变量提供，不要写进仓库
+      public-key: ${LANGFUSE_PUBLIC_KEY:}
+      secret-key: ${LANGFUSE_SECRET_KEY:}
+      # 单次上报超时。必须短：上报是锦上添花，慢了不该拖累业务
+      timeout: 5s
+      # 是否把上报内容打进日志。默认关闭——内容含用户问题与回答，默认打日志
+      # 等于默认把用户对话写进日志文件
+      log-payload: false
+
+  # ---- 会话记忆 ----
+  memory:
+    # 短时记忆保留的对话轮数（一轮 = 用户提问 + 助手回复）
+    max-history-rounds: 10
+    # 会话摘要最大字数
+    summary-max-chars: 200
+    # 生成摘要时最多送入的对话条数，防止超长会话撑爆上下文
+    summary-max-messages: 60
+    # 指代消解：把"它""那单"补全为具体实体。关闭可省一次模型调用
+    reference-resolution-enabled: true
+
+# ==================== 日志 ====================
+logging:
+  level:
+    root: info
+    com.mewchat: debug
+    # Milvus SDK 内部日志较吵，压到 warn
+    io.milvus: warn
