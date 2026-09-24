@@ -46,4 +46,18 @@ public interface ToolInvoker {
     default List<ClarificationOption> listOptions(String toolName, Long userId) {
         return List.of();
     }
+
+    /**
+     * 取某工具的候选项要填进哪个参数。
+     *
+     * <p>与 {@link #listOptions} 配套使用：后者给"让用户挑什么"，本方法给
+     * "挑中的值填到哪"。两者都由工具自己声明，编排层不再推断参数名 ——
+     * 推断的后果是静默的（值被填进另一个参数，工具拿着它去查，查出"没找到"）。
+     *
+     * @param toolName 工具名
+     * @return 参数名；该工具不提供候选项时返回 null
+     */
+    default String clarificationParam(String toolName) {
+        return null;
+    }
 }

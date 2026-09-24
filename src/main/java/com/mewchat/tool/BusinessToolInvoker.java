@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 业务工具注册表：编排层看到的工具调用入口。
@@ -135,6 +136,12 @@ public class BusinessToolInvoker implements ToolInvoker {
      * @return 不可变的工具名 → 实现映射
      * @throws IllegalStateException 工具名重复或注解校验不通过时抛出
      */
+    @Override
+    public String clarificationParam(String toolName) {
+        BusinessTool tool = toolMap.get(toolName);
+        return tool == null ? null : tool.clarificationParam();
+    }
+
     private Map<String, BusinessTool> buildToolMap(ObjectProvider<BusinessTool> toolProvider) {
         Map<String, BusinessTool> map = new LinkedHashMap<>();
         toolProvider.orderedStream().forEach(tool -> {
@@ -151,7 +158,11 @@ public class BusinessToolInvoker implements ToolInvoker {
             // 不是启动失败：没有工具时订单/物流类问题会走兜底转人工，对话本身仍可用
             log.warn("没有注册任何业务工具，订单与物流类问题将无法回答");
         } else {
-            log.info("业务工具注册完成，共 {} 个：{}", map.size(), map.keySet());
+            log.info("业务工具注册完成，共 {} 个：{}（候选参数：{}）", map.size(), map.keySet(),
+                    map.values().stream()
+                            .filter(tool -> tool.clarificationParam() != null)
+                            .map(tool -> tool.name() + "->" + tool.clarificationParam())
+                            .collect(Collectors.joining(", ")));
             // 工具名与方法的对应关系只在 debug 下打：排查"模型为什么不调用某个工具"时，
             // 第一件事就是确认注解到底标在了哪个方法上
             log.debug("工具与方法的对应关系：\n{}", describeTools(map.values()));

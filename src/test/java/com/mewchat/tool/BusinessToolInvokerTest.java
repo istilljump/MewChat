@@ -2,6 +2,7 @@ package com.mewchat.tool;
 
 import com.mewchat.tool.logistics.LogisticsTool;
 import com.mewchat.tool.order.OrderTool;
+import com.mewchat.tool.product.ProductTool;
 import com.mewchat.tool.refund.RefundTool;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -35,7 +36,8 @@ class BusinessToolInvokerTest {
             ToolInvoker invoker = context.getBean(ToolInvoker.class);
 
             assertThat(((BusinessToolInvoker) invoker).registeredToolNames())
-                    .containsExactlyInAnyOrder(OrderTool.NAME, LogisticsTool.NAME, RefundTool.NAME);
+                    .containsExactlyInAnyOrder(OrderTool.NAME, LogisticsTool.NAME, RefundTool.NAME,
+                            ProductTool.NAME);
 
             // 分发正确性：同一个入参交给不同工具，应得到各自的结果
             assertThat(invoker.invoke(OrderTool.NAME, Map.of("orderNo", "MC202409240001")).getSummary())
@@ -44,6 +46,34 @@ class BusinessToolInvokerTest {
                     .contains("运输中");
             assertThat(invoker.invoke(RefundTool.NAME, Map.of("category", "生鲜")).getSummary())
                     .contains("不支持无理由退货");
+        }
+    }
+
+    /**
+     * 候选项要填的参数名由工具声明，注册表原样透出。
+     *
+     * <p>声明为空的工具（退款政策没有可选清单）返回 null，调用方据此退回纯文字追问。
+     */
+    @Test
+    void shouldExposeClarificationParamDeclaredByTool() {
+        try (AnnotationConfigApplicationContext context = toolContext()) {
+            ToolInvoker invoker = context.getBean(ToolInvoker.class);
+
+            assertThat(invoker.clarificationParam(OrderTool.NAME))
+                    .as("订单候选填订单号")
+                    .isEqualTo("orderNo");
+            assertThat(invoker.clarificationParam(LogisticsTool.NAME))
+                    .as("物流候选复用订单列表，同样填订单号")
+                    .isEqualTo("orderNo");
+            assertThat(invoker.clarificationParam(ProductTool.NAME))
+                    .as("商品候选填商品名")
+                    .isEqualTo(ProductTool.PARAM_PRODUCT_NAME);
+            assertThat(invoker.clarificationParam(RefundTool.NAME))
+                    .as("退款政策没有可选清单，应声明为空")
+                    .isNull();
+            assertThat(invoker.clarificationParam("not_a_tool"))
+                    .as("未注册的工具名不能抛异常")
+                    .isNull();
         }
     }
 
@@ -141,7 +171,8 @@ class BusinessToolInvokerTest {
      */
     private AnnotationConfigApplicationContext toolContext() {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
-        context.register(OrderTool.class, LogisticsTool.class, RefundTool.class, BusinessToolInvoker.class);
+        context.register(OrderTool.class, LogisticsTool.class, RefundTool.class,
+                ProductTool.class, BusinessToolInvoker.class);
         context.refresh();
         return context;
     }

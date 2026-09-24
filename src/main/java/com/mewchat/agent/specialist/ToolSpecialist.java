@@ -11,6 +11,7 @@ import com.mewchat.tool.ToolInvoker;
 import com.mewchat.tool.ToolResult;
 import com.mewchat.tool.logistics.LogisticsTool;
 import com.mewchat.tool.order.OrderTool;
+import com.mewchat.tool.product.ProductTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -68,7 +69,8 @@ public class ToolSpecialist implements ChatNode {
      */
     private static final Map<IntentType, String> INTENT_TOOL_MAP = Map.of(
             IntentType.ORDER_QUERY, OrderTool.NAME,
-            IntentType.LOGISTICS_QUERY, LogisticsTool.NAME
+            IntentType.LOGISTICS_QUERY, LogisticsTool.NAME,
+            IntentType.PRODUCT_QUERY, ProductTool.NAME
     );
 
     /** 参数名到中文说明的映射，用于生成追问话术 */
@@ -76,7 +78,8 @@ public class ToolSpecialist implements ChatNode {
             "orderNo", "订单号",
             "trackingNo", "运单号",
             "phone", "下单手机号",
-            "category", "商品类目"
+            "category", "商品类目",
+            "productName", "商品名称"
     );
 
     private final ObjectProvider<ToolInvoker> toolInvokerProvider;
@@ -189,7 +192,7 @@ public class ToolSpecialist implements ChatNode {
             return StringUtils.hasText(toolHint) ? toolHint : buildClarifyMessage(missingParams);
         }
 
-        String targetParam = resolveTargetParam(missingParams);
+        String targetParam = resolveTargetParam(invoker, toolName, missingParams);
         savePendingClarification(context, targetParam, options);
         log.debug("追问附带 {} 个候选项，已挂起等待用户选择：session={} 目标参数={}",
                 options.size(), context.getSessionId(), targetParam);
@@ -211,25 +214,36 @@ public class ToolSpecialist implements ChatNode {
      * @param missingParams 缺失的参数名
      * @return 目标参数名
      */
-    private static String resolveTargetParam(List<String> missingParams) {
-        if (missingParams.contains("orderNo") || missingParams.contains("trackingNo")) {
-            return "orderNo";
+    private String resolveTargetParam(ToolInvoker invoker, String toolName, List<String> missingParams) {
+        // 优先用工具自己声明的参数名：候选值与参数名的对应关系只有提供候选的工具知道
+        // （订单工具给订单号、商品工具给商品名）。编排层去推断的话，
+        // 每接一个新工具都要改这里的判断，而推错的后果是静默的 ——
+        // 用户选的第 1 项被填进了另一个参数，工具拿着它去查，结果"没找到"
+        String declared = invoker.clarificationParam(toolName);
+        if (StringUtils.hasText(declared)) {
+            return declared;
         }
+        // 工具给了候选却没声明参数名属于实现缺陷：这里退化成"填第一个缺失的参数"，
+        // 让追问仍能发出（用户至少能看到候选），同时把问题暴露在日志里
+        log.warn("工具 {} 提供了候选项却未声明 clarificationParam，追问将把候选项填进 {}；"
+                + "请在工具里声明参数名，否则用户选中后会被填错参数", toolName, missingParams.get(0));
         return missingParams.get(0);
     }
 
     /**
      * 生成带候选列表的追问话术。
      *
-     * <p>明确写出"回复序号或订单号都可以"：两种输入都会在续接时被识别，
-     * 不写清楚的话用户可能以为必须原样复制订单号。
+     * <p><b>措辞不能写死成"订单"</b>：候选来源已经不止订单（商品工具也会列候选），
+     * 给商品列表配一句"请从下面的订单里选一个"会让用户以为自己点错了地方。
+     * 因此这里用与具体工具无关的说法，同时保留"回复序号"与"直接说名字"两条路径
+     * —— 后者走的是正常流程（意图识别会把它捞回来），不写清楚用户会以为只能回序号。
      *
      * @param options 候选项
      * @return 追问文本
      */
     private String buildOptionHint(List<ClarificationOption> options) {
         StringBuilder builder = new StringBuilder(
-                "好的，为了帮您查询，请从下面的订单里选一个（直接回复序号或订单号都可以）：");
+                "好的，为了帮您查询，请从下面的选项里选一个（回复序号即可；也可以直接把订单号或商品名发给我）：");
         for (int i = 0; i < options.size(); i++) {
             builder.append('\n').append(i + 1).append(") ").append(options.get(i).label());
         }

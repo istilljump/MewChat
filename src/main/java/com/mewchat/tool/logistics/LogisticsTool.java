@@ -149,6 +149,13 @@ public class LogisticsTool implements BusinessTool {
      * @return 候选项列表
      */
     @Override
+    public String clarificationParam() {
+        // 候选来自订单工具（候选值就是订单号），物流本身接受订单号并自行反查运单号，
+        // 因此填 orderNo 而不是 trackingNo —— 把订单号塞进 trackingNo 是名不副实的
+        return "orderNo";
+    }
+
+    @Override
     public List<ClarificationOption> listOptions(Long userId) {
         return orderTool.listOptions(userId);
     }

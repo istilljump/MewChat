@@ -55,11 +55,14 @@ public class IntentRecognizer {
             }
 
             判断规则：
-            1. 询问退货/换货/退款政策、发票、商品参数、服务规则等 -> KNOWLEDGE_QA 或 REFUND_ASK
+            1. 询问退货/换货/退款政策、发票、服务规则等 -> KNOWLEDGE_QA 或 REFUND_ASK
             2. 查询某个订单的状态、金额、内容 -> ORDER_QUERY
             3. 查询包裹到哪了、什么时候到 -> LOGISTICS_QUERY
-            4. 表达不满、要求投诉、要求赔偿 -> COMPLAINT
-            5. 完全无法判断用户想做什么 -> UNKNOWN
+            4. 询问某件商品的价格、库存、有没有货、什么规格 -> PRODUCT_QUERY
+               （与 KNOWLEDGE_QA 的分界：问"是一个确定的值"走 PRODUCT_QUERY，
+                 问"是什么规则/怎么用"走 KNOWLEDGE_QA）
+            5. 表达不满、要求投诉、要求赔偿 -> COMPLAINT
+            6. 完全无法判断用户想做什么 -> UNKNOWN
 
             字段要求：
             - confidence：你对意图判断的把握，0 到 1 的小数。不确定就给低分，不要一律给 0.9
@@ -67,7 +70,8 @@ public class IntentRecognizer {
             - params：只放用户明确说出的信息。没有订单号就不要出现 orderNo 这个键。
               订单号通常是 10~20 位的数字串，不要把"我的订单"这种东西当订单号。
               快递/运单号（如 SF1234567890、ZT9876543210）放 trackingNo，不要混进 orderNo。
-              用户提到商品或商品类别时，把商品词放 category（如"耳机""连衣裙""生鲜"）
+              用户提到商品或商品类别时，把商品词放 category（如"耳机""连衣裙""生鲜"）；
+              问某件商品的价格/库存/规格时，把商品词放 productName（如"无线蓝牙耳机 Pro"）
             """;
 
     private final ChatModel chatModel;

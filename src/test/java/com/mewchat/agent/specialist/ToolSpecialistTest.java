@@ -10,6 +10,7 @@ import com.mewchat.tool.ToolInvoker;
 import com.mewchat.tool.ToolResult;
 import com.mewchat.tool.logistics.LogisticsTool;
 import com.mewchat.tool.order.OrderTool;
+import com.mewchat.tool.product.ProductTool;
 import com.mewchat.tool.refund.RefundTool;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -141,7 +142,7 @@ class ToolSpecialistTest {
 
         assertThat(context.getClarificationHint())
                 .as("追问应当把候选列出来，并说明怎么选")
-                .contains("请从下面的订单里选一个")
+                .contains("请从下面的选项里选一个")
                 .contains("1)")
                 .contains("MC202409240001");
 
@@ -169,13 +170,75 @@ class ToolSpecialistTest {
         ChatState next = specialist.execute(context);
 
         assertThat(next).isEqualTo(ChatState.CONFIDENCE_CHECK);
-        assertThat(context.getClarificationHint()).contains("请从下面的订单里选一个");
+        assertThat(context.getClarificationHint()).contains("请从下面的选项里选一个");
 
         PendingClarification pending = capturedPending();
         assertThat(pending.getIntent()).isEqualTo(IntentType.LOGISTICS_QUERY.name());
         assertThat(pending.getMissingParam())
                 .as("候选值是订单号，该填的参数就是 orderNo")
                 .isEqualTo("orderNo");
+    }
+
+    /**
+     * 商品查询缺商品名时列出商品候选，且候选值要填的参数是 <b>productName</b>。
+     *
+     * <p>与订单候选的区别正在于参数名：订单候选填 orderNo、商品候选填 productName。
+     * 参数名若靠编排层去猜（比如"缺的参数里没有 orderNo 就填第一个"），
+     * 接第三个候选来源时就会填错 —— 用户选了第 1 项，值却被填进另一个参数，
+     * 工具拿着它去查，结果"没找到"，而整条链路不报任何错。
+     */
+    @Test
+    void productQueryWithoutNameShouldOfferCandidatesForProductName() {
+        ChatContext context = contextOf(IntentType.PRODUCT_QUERY, Map.of());
+
+        ChatState next = specialist.execute(context);
+
+        assertThat(next).isEqualTo(ChatState.CONFIDENCE_CHECK);
+        assertThat(recordingInvoker.calls).as("缺参数时不应发起工具调用").isEmpty();
+        assertThat(context.getClarificationHint())
+                .contains("请从下面的选项里选一个")
+                .contains("无线蓝牙耳机 Pro");
+
+        PendingClarification pending = capturedPending();
+        assertThat(pending.getIntent()).isEqualTo(IntentType.PRODUCT_QUERY.name());
+        assertThat(pending.getMissingParam())
+                .as("候选值是商品名，该填的参数就是 productName")
+                .isEqualTo(ProductTool.PARAM_PRODUCT_NAME);
+        assertThat(pending.getOptions()).isNotEmpty();
+    }
+
+    /**
+     * 候选要填的参数名<b>以工具声明的为准</b>，而不是编排层按缺失参数推断。
+     *
+     * <p>这里故意让替身工具声明一个"猜不出来"的参数名（missingParams 里是 productName，
+     * 声明的是 phone）：若编排层还在自己推断，落库的就会是 productName，
+     * 这条用例会失败。这样一旦有人把声明机制改回推断，测试立刻报警。
+     */
+    @Test
+    void clarificationParamShouldComeFromToolDeclaration() {
+        ToolInvoker declaringInvoker = new ToolInvoker() {
+            @Override
+            public ToolResult invoke(String toolName, Map<String, Object> params) {
+                return ToolResult.ok(toolName, "不应被调用", Map.of());
+            }
+
+            @Override
+            public List<com.mewchat.tool.ClarificationOption> listOptions(String toolName, Long userId) {
+                return List.of(new com.mewchat.tool.ClarificationOption("v1", "候选项一"));
+            }
+
+            @Override
+            public String clarificationParam(String toolName) {
+                return "phone";
+            }
+        };
+        ToolSpecialist declaring = new ToolSpecialist(providerOf(declaringInvoker), conversationService);
+
+        declaring.execute(contextOf(IntentType.PRODUCT_QUERY, Map.of()));
+
+        assertThat(capturedPending().getMissingParam())
+                .as("必须以工具声明的 phone 为准，而不是被推断成第一个缺失参数 productName")
+                .isEqualTo("phone");
     }
 
     /**
@@ -341,7 +404,7 @@ class ToolSpecialistTest {
         if (toolContext == null) {
             toolContext = new AnnotationConfigApplicationContext();
             toolContext.register(OrderTool.class, LogisticsTool.class, RefundTool.class,
-                    BusinessToolInvoker.class);
+                    ProductTool.class, BusinessToolInvoker.class);
             toolContext.refresh();
         }
         return toolContext.getBean(ToolInvoker.class);
@@ -428,6 +491,14 @@ class ToolSpecialistTest {
         public List<com.mewchat.tool.ClarificationOption> listOptions(String toolName, Long userId) {
             // 候选必须走真实实现：替身返回空列表会让"列候选"这条分支测不到
             return delegate.listOptions(toolName, userId);
+        }
+
+        @Override
+        public String clarificationParam(String toolName) {
+            // 这个也要转发：漏掉它会静默退化成"编排层自己推断参数名"，
+            // 于是"物流候选该填 orderNo 而不是 trackingNo"这条就测不出来了
+            // （替身返回 null → 退化分支 → 填成第一个缺失参数 trackingNo）
+            return delegate.clarificationParam(toolName);
         }
     }
 }

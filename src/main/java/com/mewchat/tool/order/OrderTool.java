@@ -136,6 +136,11 @@ public class OrderTool implements BusinessTool {
      * @return 候选项列表，只含属于该用户的订单
      */
     @Override
+    public String clarificationParam() {
+        return "orderNo";
+    }
+
+    @Override
     public List<ClarificationOption> listOptions(Long userId) {
         if (userId == null) {
             return List.of();

@@ -33,6 +33,18 @@ public enum IntentType {
      */
     LOGISTICS_QUERY("物流查询", ChatState.TOOL_CALL, List.of()),
 
+    /**
+     * 商品查询：问价格、库存、规格等结构化事实，走工具。
+     *
+     * <p>与 {@link #KNOWLEDGE_QA} 的分界是"答案是不是一个确定的值"：
+     * "这个耳机支持什么协议"可以由商品描述回答（知识检索），
+     * "这个耳机多少钱、还有货吗"必须查到确切的值 —— 让模型从知识片段里
+     * "读出"价格，是编造数字最常见的入口。
+     *
+     * <p>必需参数是商品名：不说清是哪件商品，价格与库存都无从谈起。
+     */
+    PRODUCT_QUERY("商品查询", ChatState.TOOL_CALL, List.of("productName")),
+
     /** 退款咨询：退款规则本身属知识类问题，走 RAG */
     REFUND_ASK("退款咨询", ChatState.RAG_RETRIEVE, List.of()),
 
