@@ -34,6 +34,11 @@
 
 ### 1. 建库与建表
 
+> **库名由 `--database` 指定，脚本里不含 `USE`**。因此想换库名，
+> 只需改下面两处（建库语句 + `--database`）以及应用连接串里的库名。
+> 脚本刻意不写死库名：写死时若调用方指定了别的库，建表会静默落到写死的那个库上，
+> 而"未选择数据库"是一个立刻能看见的错误。
+
 ```bash
 # 建库
 mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS mewchat DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"

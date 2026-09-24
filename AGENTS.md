@@ -1295,6 +1295,9 @@ Windows 上 jar 被运行中的进程占用，`maven-clean-plugin` 删不掉它�
   done
   ```
   `--default-character-set=utf8mb4` 不能省：脚本是 UTF-8，而 Windows 终端默认可能是 GBK。
+  **库名由 `--database` 指定**：六个脚本都不含 `USE`（原先 01/02 自带 `USE \`mewchat\``、
+  03~06 靠 `--database`，用别的库名时前两个会静默把表建到 `mewchat`，两边都不报错 ——
+  阶段 14 克隆验证时踩到）。要换库名，改建库语句、`--database` 与应用连接串三处即可。
 - **跑集成测试**（`mvn` 不在 PATH，用项目内 wrapper；密码必须显式传入，
   测试里 `mewchat.it.mysql.password` 默认是**空**）：
   ```bash
