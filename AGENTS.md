@@ -1258,6 +1258,30 @@ Windows 上 jar 被运行中的进程占用，`maven-clean-plugin` 删不掉它�
   后台无分权（客服进不去）、知识库不支持文件上传、无 refresh token/登出、
   客户端断开不取消生成。
 
+### 阶段 14 Windows 一键启动脚本（2026-09-24）
+
+新增 `start.bat`（预检 → 按需建库/构建 → 启动，含 `check` / `fake` / `rebuild` 三种模式）
+与 `stop.bat`（按端口停应用与假端点，因为构建前必须先停，否则 Windows 锁住 jar）。
+两者都是 **GBK 编码**：应用的中文日志是 GBK，控制台用 936 代码页才能同时正确显示
+脚本提示与应用日志。首次运行自动生成 `local.env.bat`（本机 MySQL 目录/密码、大模型 Key、
+随机令牌密钥），该文件已被 `.gitignore` 忽略。
+
+**写这两个脚本时踩到两个真缺陷，都属于"只有真跑才会暴露"的类型，记下来**：
+
+1. **`FakeOpenAi.main()` 返回导致 JVM 立刻退出**（已修：`new CountDownLatch(1).await()`）。
+   `HttpServer` 的调度线程是守护线程，而 `Executors` 的线程池是按需创建的（启动时一个
+   非守护线程都没有），因此 main 一返回进程就结束。症状极具迷惑性：**日志里打印了
+   "已启动"、端口短暂 LISTENING、随后所有请求连不上**，而且从进程表看像"起了但不应答"。
+2. **假端点往自己 stdout 重定向的那个文件追加日志**（已修：日志写入 try/catch 不再
+   影响服务，且 `run.bat` 的 stdout 另写一个文件）。两次打开同一文件在 Windows 上会失败，
+   异常抛出去等于把请求直接掐断 —— 表现同样是"端口通了但接口不应答"，
+   而 `/`（404，走不到处理器）却一切正常。**日志只是排查辅助，不能变成故障点。**
+
+排查过程中还浪费了很多时间在一个低级错误上：**用 `tasklist | grep -ci java` 数进程
+一直得到空结果**（输出编码/匹配问题），据此误判"进程已消失"、走了很久的弯路。
+查 Windows 进程请用 `powershell -Command "(Get-Process java).Count"`，
+或在 netstat 里按端口找 PID 再查它的命令行。
+
 ### 运行前置条件
 
 - **`MEWCHAT_TOKEN_SECRET` 现在是必填项**（阶段 10 变更）：`application.yml` 不再提供默认值，

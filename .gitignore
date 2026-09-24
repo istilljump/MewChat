@@ -27,6 +27,12 @@ target/
 logs/
 *.tmp
 
+### 假端点的编译产物 ###
+tools/fake-openai/build/
+
+### 本地一键启动的个人配置（含数据库密码与 API Key，禁止提交） ###
+local.env.bat
+
 ### 系统文件 ###
 .DS_Store
 Thumbs.db

@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 
 /**
@@ -93,12 +94,17 @@ public class FakeOpenAi {
         System.out.println("本地假 OpenAI 端点已启动：http://127.0.0.1:" + port + "/v1");
         System.out.println("请求日志：" + logFile.toAbsolutePath());
         System.out.println("把应用指过来：LLM_BASE_URL=http://127.0.0.1:" + port + "/v1");
+
+        // 必须在这里阻塞住：HttpServer 的调度线程是守护线程，而线程池是按需创建的
+        // （此刻还没有任务，一个非守护线程都没有）。main 一旦返回，JVM 立即退出 ——
+        // 表现为"日志里打印了已启动、端口短暂 LISTENING、随后请求全部连不上"，
+        // 而且进程已经没了，看起来像"起了但不应答"（实测踩过，排查了很久）。
+        new CountDownLatch(1).await();
     }
 
     private static void handle(HttpExchange exchange, Path logFile) throws IOException {
         String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        Files.writeString(logFile, "===== 请求 =====\n" + body + "\n\n", StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        appendLog(logFile, body);
 
         // OpenAI 协议用请求体里的 stream 字段区分流式与同步
         if (compact(body).contains("\"stream\":true")) {
@@ -107,6 +113,33 @@ public class FakeOpenAi {
         }
         json(exchange, intent(body));
     }
+
+    /**
+     * 追加一条请求记录到日志文件。
+     *
+     * <p><b>写日志失败绝不能影响服务</b>：这里踩过一个很隐蔽的坑 ——
+     * 启动脚本若把 java 的 stdout 重定向到同一个日志文件，本方法第二次打开该文件会失败
+     * （Windows 报"另一个程序正在使用此文件"）。异常一旦抛出去，请求就被直接掐断，
+     * 客户端看到的是连接被关闭（curl 报 000），而服务端其它路径（比如 404）一切正常，
+     * 表现为"端口通了但接口不应答"，极难定位。日志只是排查辅助，不能让它变成故障点。
+     *
+     * @param logFile 日志文件
+     * @param body    请求体
+     */
+    private static void appendLog(Path logFile, String body) {
+        try {
+            Files.writeString(logFile, "===== 请求 =====\n" + body + "\n\n", StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (Exception e) {
+            if (!LOGGED_WRITE_FAILURE) {
+                LOGGED_WRITE_FAILURE = true;
+                System.err.println("提示：请求日志写入失败（不影响服务）：" + e);
+            }
+        }
+    }
+
+    /** 写日志失败只提示一次，避免每个请求刷一行 */
+    private static volatile boolean LOGGED_WRITE_FAILURE;
 
     /**
      * 同步调用：模拟意图识别 / 指代消解 / 会话摘要。

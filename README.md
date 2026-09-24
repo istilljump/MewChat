@@ -20,6 +20,34 @@
 
 ## 快速开始
 
+### 0. 最省事的启动方式（Windows）：双击 `start.bat`
+
+```bat
+start.bat            :: 预检 → 按需建库/构建 → 启动应用（前台，Ctrl+C 停止）
+start.bat check      :: 只做环境预检，不启动（部署前先跑一下）
+start.bat fake       :: 顺带启动本地假模型端点（没有大模型 Key 时用）
+start.bat rebuild    :: 强制重新构建（含跑测试）后再启动
+stop.bat             :: 停掉应用与假端点（构建前先停，否则 jar 被占用无法删除）
+```
+
+它会自己处理这几件事：检查 JDK 与 Maven Wrapper、MySQL 没起就试着拉起、
+**库不存在就按 01 → 06 顺序建库建表**（含两个演示账号）、jar 不存在就构建。
+
+首次运行会生成 `local.env.bat`（本机配置：MySQL 目录/密码、大模型 Key、
+自动生成的令牌密钥）。**它含密码，已被 `.gitignore` 忽略，不会进仓库**。
+默认密码按 `root` 写入；不是的话改这一行后重跑即可：
+
+```bat
+set "MYSQL_PASSWORD=你的密码"
+```
+
+想用真实模型，把 Key 填进同一个文件的 `LLM_API_KEY`（`LLM_BASE_URL`/`LLM_MODEL`
+默认已是 DeepSeek，换厂商改这三行即可）。
+
+> **关于 `start.bat fake`**：它启动本地假端点作为"没有 Key 也能看效果"的便利。
+> 假端点起不来时**不会阻塞启动**，只会告警 —— 此时提问会走追问（意图识别降级），
+> 应用本身完全正常。也可以在另一个窗口双击 `tools/fake-openai/run.bat` 手动启动。
+
 ### 0. 前置条件
 
 | 需要什么 | 说明 |
@@ -253,8 +281,9 @@ src/main/java/com/mewchat/
 ├── job/         定时任务（会话收尾、问题聚类）
 └── common/      统一返回、异常、工具、令牌、可观测
 
+start.bat / stop.bat  Windows 一键启动 / 停止
 sql/             建表脚本（01 → 06）
-tools/fake-openai/ 本地假模型端点（只依赖 JDK）
+tools/fake-openai/ 本地假模型端点（只依赖 JDK；run.bat 单独启动）
 docs/demo-runbook.md 演示脚本（8 步，每步写清"命令 → 该看到什么"）
 docs/data-model.md   数据模型设计
 AGENTS.md        项目规范与逐阶段落地记录（Single Source of Truth）
