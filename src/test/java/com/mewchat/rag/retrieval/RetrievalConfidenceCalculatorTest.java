@@ -31,20 +31,30 @@ class RetrievalConfidenceCalculatorTest {
     }
 
     /**
-     * 只有一条高分片段时，数量因子只拿三分之一。
+     * 单条片段也能拿满分，但只有它自身就是满分时才如此（重排分 1.0 = 词项全覆盖 + 标题命中）。
      *
-     * <p>这正是引入数量因子的目的：单条依据的可信度天然低于多条互相印证。
-     * 期望值 = 0.7 × 1.0 + 0.3 × (1/3) = 0.8
+     * <p><b>阶段 12 改了这里的口径，说明写在这里以免日后被误当成回退</b>：
+     * 原先 {@code expected-chunk-count=3} 把单条依据压成 {@code 0.7×分 + 0.1}，
+     * 于是"单片命中"永远够不到达标线 —— 端到端实测里检索精准命中了正确片段
+     * （引用正确、重排分 0.714）却算出 0.60、白跑一次补检索后走兜底。
+     * 新知识库往往只召回一两片，那等于"知识刚录进去也答不上来"。
+     * 现在数量因子退化为"至少有一条达标片段"这道门槛，佐证关系由最高分体现。
+     *
+     * <p>防线并没有因此丢掉：<b>排第一但毫无词面重叠</b>的片段重排分恰好是融合项下限 0.5，
+     * 置信度上界 {@code 0.7×0.5 + 0.3 = 0.65} 仍低于达标线 0.70
+     * （见 {@code RagConfidenceCeilingTest}）。"排第一"本身依然不足以作答。
      */
     @Test
-    void singleHighScoreChunkShouldNotReachFullConfidence() {
-        assertThat(calculator.calculate(List.of(chunk(1.0)))).isEqualByComparingTo("0.8");
+    void singleChunkShouldReachFullConfidenceOnlyWithPerfectScore() {
+        assertThat(calculator.calculate(List.of(chunk(1.0)))).isEqualByComparingTo("1.0");
+        // 0.7 × 0.6 + 0.3 × 1 = 0.72：够作答，但明显低于满分的 1.0
+        assertThat(calculator.calculate(List.of(chunk(0.6)))).isEqualByComparingTo("0.7200");
     }
 
     /**
-     * 三条高分片段达到满置信度。
+     * 多条高分片段同样达到满置信度。
      *
-     * <p>0.7 × 1.0 + 0.3 × (3/3) = 1.0
+     * <p>0.7 × 1.0 + 0.3 × min(1, 3/1) = 1.0
      */
     @Test
     void enoughHighScoreChunksShouldReachFullConfidence() {

@@ -117,8 +117,10 @@ class MysqlPersistenceFixesIntegrationTest {
      */
     @Test
     void overlongQuestionShouldStillEnterThePool() {
-        // 1500 字：超过原先的列宽 1000，但不超过用户消息上限 2000
-        String question = "退".repeat(1500);
+        // 1500 字：超过原先的列宽 1000，但不超过用户消息上限 2000。
+        // 尾部拼一个唯一后缀：问题池按"归一化后的哈希"去重，用固定文案会让用例
+        // 撞上库里已有的同一句话（那条可能已被标记为已优化），从而测到别的状态
+        String question = uniqueQuestion("退", 1500);
         String sessionId = newSessionId();
 
         lowConfidenceQuestionService.record(question, new BigDecimal("0.10"), sessionId);
@@ -259,8 +261,8 @@ class MysqlPersistenceFixesIntegrationTest {
     @Test
     void clusterAssignmentShouldBeWrittenBack() {
         String sessionId = newSessionId();
-        lowConfidenceQuestionService.record("赠品什么时候发货", BigDecimal.ZERO, sessionId);
-        lowConfidenceQuestionService.record("赠品何时寄出呢", new BigDecimal("0.30"), sessionId);
+        lowConfidenceQuestionService.record(uniqueQuestion("赠品什么时候发货"), BigDecimal.ZERO, sessionId);
+        lowConfidenceQuestionService.record(uniqueQuestion("赠品何时寄出呢"), new BigDecimal("0.30"), sessionId);
 
         List<LowConfidenceQuestion> rows = lowConfidenceQuestionService.lambdaQuery()
                 .eq(LowConfidenceQuestion::getSessionId, sessionId)
@@ -290,7 +292,7 @@ class MysqlPersistenceFixesIntegrationTest {
     @Test
     void markingOptimizedShouldRemoveQuestionFromChecklist() {
         String sessionId = newSessionId();
-        lowConfidenceQuestionService.record("赠品什么时候发货", BigDecimal.ZERO, sessionId);
+        lowConfidenceQuestionService.record(uniqueQuestion("赠品什么时候发货"), BigDecimal.ZERO, sessionId);
         LowConfidenceQuestion question = lowConfidenceQuestionService.lambdaQuery()
                 .eq(LowConfidenceQuestion::getSessionId, sessionId)
                 .one();
@@ -316,7 +318,7 @@ class MysqlPersistenceFixesIntegrationTest {
     @Test
     void markingTwiceShouldNotUpdateAgain() {
         String sessionId = newSessionId();
-        lowConfidenceQuestionService.record("赠品什么时候发货", BigDecimal.ZERO, sessionId);
+        lowConfidenceQuestionService.record(uniqueQuestion("赠品什么时候发货"), BigDecimal.ZERO, sessionId);
         Long id = lowConfidenceQuestionService.lambdaQuery()
                 .eq(LowConfidenceQuestion::getSessionId, sessionId)
                 .one()
@@ -349,6 +351,34 @@ class MysqlPersistenceFixesIntegrationTest {
                 .build();
         userMapper.insert(user);
         return user;
+    }
+
+    /**
+     * 给问题文案拼一个唯一后缀。
+     *
+     * <p><b>为什么必须唯一</b>：问题池是按"归一化后的哈希"去重的，
+     * 用固定文案写测试就等于要求"库里从来没有过这句话" —— 这个前提在开发库上不成立
+     * （联调时的演示数据、上一轮失败留下的数据都可能命中同一哈希），
+     * 而命中的那一行可能处于任意状态（比如已被标记为已优化）。
+     * 拼后缀之后，用例断言的就只是自己写进去的那一行，与库里原有内容无关。
+     *
+     * @param base 基础文案
+     * @return 带唯一后缀的文案
+     */
+    private static String uniqueQuestion(String base) {
+        return base + "（" + UUID.randomUUID() + "）";
+    }
+
+    /**
+     * 构造一个"总长为 {@code totalLength} 且唯一"的问题文案。
+     *
+     * @param filler      填充字符
+     * @param totalLength 期望总长度
+     * @return 问题文案
+     */
+    private static String uniqueQuestion(String filler, int totalLength) {
+        String suffix = UUID.randomUUID().toString();
+        return filler.repeat(Math.max(1, totalLength - suffix.length())) + suffix;
     }
 
     /**

@@ -60,10 +60,15 @@ class RagConfidenceCeilingTest {
      *     <li>下限 0.5 是<b>含等号</b>的，因此只有头部那一条（正好 0.5）被算作有效片段，
      *         另外两条落在下限之下不算 —— 这一点很关键：
      *         "排第一"本身不构成相关性证据</li>
-     *     <li>置信度 = 0.7×0.5 + 0.3×(1/3) = <b>0.45</b></li>
+     *     <li>计数项：只有头部那一条被算作有效片段，{@code effectiveCount=1}；
+     *         默认 {@code expected-chunk-count=1}，因此计数项拿满分</li>
+     *     <li>置信度 = 0.7×0.5 + 0.3×1.0 = <b>0.65</b></li>
      * </ul>
-     * 0.45 落在中档（0.40~0.70）：会多跑一次补检索，随后走兜底。
-     * 代价是一次多余的检索，而不是拿无关片段组织出一段像样的回答。
+     * 0.65 低于达标线 0.70，落在中档：至多多跑一次补检索，随后走兜底。
+     *
+     * <p><b>0.65 这个上界是可以推导出来的，不依赖经验</b>：零词面覆盖的片段重排分恰好
+     * 等于融合项下限（0.5），于是 {@code 0.7×0.5 + 0.3 = 0.65 < 0.70} ——
+     * 只要权重不越过这条线，"排第一"就永远不足以作答。
      */
     @Test
     void irrelevantChunksShouldNeverReachReply() {
@@ -73,15 +78,15 @@ class RagConfidenceCeilingTest {
                 .as("无关召回必须落在达标线以下，否则系统会拿无关内容作答")
                 .isLessThan(new AgentProperties().getHighConfidenceThreshold());
         assertThat(confidence)
-                .as("按当前权重应为 0.45：排第一不构成相关性证据，计数项只拿到 1/3")
-                .isEqualByComparingTo("0.4500");
+                .as("应为 0.65：排第一不构成相关性证据，但计数项在 expected=1 下已拿满")
+                .isEqualByComparingTo("0.6500");
     }
 
     /**
-     * 只有一条无关候选时，结果同样是 0.45 —— 不能因为"没有别的候选"就显得可信。
+     * 只有一条无关候选时同样到不了达标线。
      *
      * <p>这正是把归一化写进断言的价值：候选从三条减到一条，分数<b>一点没变</b>，
-     * 因为 RRF 只看排名、计数项又都只算一条有效片段。
+     * 因为 RRF 只看排名、两条路径的计数项也都是"1 条有效片段 / 期望 1 条"。
      */
     @Test
     void singleIrrelevantChunkShouldNotReachReply() {
@@ -90,7 +95,54 @@ class RagConfidenceCeilingTest {
         assertThat(confidence)
                 .as("单条无关召回不能因为'没有别的候选'就显得可信")
                 .isLessThan(new AgentProperties().getHighConfidenceThreshold());
-        assertThat(confidence).isEqualByComparingTo("0.4500");
+        assertThat(confidence).isEqualByComparingTo("0.6500");
+    }
+
+    /**
+     * 反过来：<b>单片精准命中必须能作答</b>。
+     *
+     * <p>这条是阶段 12 端到端联调补出来的缺口。此前只断言了"无关召回不能作答"，
+     * 却没有断言"命中就该作答"，于是默认 {@code expected-chunk-count=3} 让
+     * <b>单片命中永远答不出来</b>这件事一直没被发现 —— 实测里检索精准命中了正确片段
+     * （引用、分数 0.714、覆盖度 0.29），却算出 0.60、白跑一次补检索后走了兜底。
+     * 新知识库往往只召回一两片，那等于"知识刚录进去也答不上来"。
+     *
+     * <p>这里用与实测同量级的分片（词项覆盖约 2/7、标题命中）走完整条链路，
+     * 断言它落在达标线之上。
+     */
+    @Test
+    void singleRelevantChunkShouldBeAnswerable() {
+        RetrievedChunk relevant = RetrievedChunk.builder()
+                .chunkId("c1")
+                .docId(1L)
+                .chunkNo(1)
+                .docTitle("赠品发货时效说明")
+                .text("赠品随主商品一起发出；若赠品缺货，将在到货后 3 个工作日内单独寄出。")
+                .bm25Score(1.2)
+                .sources("bm25")
+                .build();
+
+        BigDecimal confidence = confidenceOfRelevant(List.of(relevant));
+
+        assertThat(confidence)
+                .as("单片精准命中必须够到达标线，否则新知识库会长期'答不上来'")
+                .isGreaterThanOrEqualTo(new AgentProperties().getHighConfidenceThreshold());
+    }
+
+    /**
+     * 用一条"与提问真正相关"的片段走完整条链路，返回置信度。
+     *
+     * <p>与 {@link #confidenceOf(List)} 的区别只在提问与片段内容：
+     * 那条链路验的是"无关召回"，这条验的是"命中"。共用同一套融合/重排/置信度实现，
+     * 因此两者合起来把这条口径的<b>上下两侧</b>都钉住了。
+     *
+     * @param candidates 候选片段
+     * @return 置信度
+     */
+    private BigDecimal confidenceOfRelevant(List<RetrievedChunk> candidates) {
+        List<RetrievedChunk> fused = rrfFusion.fuse(List.of(), candidates, ragProperties.getRrf().getK());
+        List<RetrievedChunk> reranked = reranker.rerank("赠品什么时候发货", fused, ragProperties.getTopK());
+        return calculator.calculate(reranked);
     }
 
     /**
