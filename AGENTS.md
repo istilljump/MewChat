@@ -1282,6 +1282,21 @@ Windows 上 jar 被运行中的进程占用，`maven-clean-plugin` 删不掉它�
 查 Windows 进程请用 `powershell -Command "(Get-Process java).Count"`，
 或在 netstat 里按端口找 PID 再查它的命令行。
 
+**新建库这条路径又是"只有真跑才暴露"的一类**，一并记下（都已修）：
+
+3. **batch 括号块内的 `%VAR%` 取的是块解析时的值**。判断"库是否已初始化"的那段整体
+   处在 `) else (` 里，于是 `if not "%TABLE_COUNT%"=="0"` 里的 TABLE_COUNT 永远是空的，
+   `if not ""=="0"` 为真 → **新库被误判成"已就绪"，建表整段跳过**。改用 `!VAR!`
+   延迟展开。有库时永远走不到这个分支，因此只有测全新库才发现。
+4. **`DB_NAME` 只用于脚本的建库检查，没传给应用**（应用的库名来自 `application.yml`）。
+   两者一旦不一致就会出现"脚本检查 A 库、应用连 B 库"的静默错位 —— 现在启动时
+   通过 `--spring.datasource.url` 把库名传给应用，两处始终同一个库。
+
+顺带记两条 Windows 排查经验：查进程用
+`powershell -Command "(Get-Process java).Count"`（`tasklist | grep` 在本机编码下
+会给出空结果，据此误判过"进程已消失"）；清场要按映像名
+`taskkill /IM java.exe /F`，按 PID 杀容易漏掉子进程，而漏掉的那个会继续占着端口与日志文件。
+
 ### 运行前置条件
 
 - **`MEWCHAT_TOKEN_SECRET` 现在是必填项**（阶段 10 变更）：`application.yml` 不再提供默认值，
