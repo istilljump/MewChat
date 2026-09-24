@@ -97,13 +97,15 @@ if not exist "%MYSQL_EXE%" (
     rem （cmd 会吃掉那种命令的首尾引号，实测判断会永远为"不存在"，于是对已建好的库
     rem  重跑 03/04 这类 ALTER，撞上"列已存在"直接中止）；也不能用 set /p 读，
     rem  它会把行尾的 CR 带进变量。for /f 读文件两个问题都没有。
+    rem 还有一条：本段整体在 ) else ( 括号块内，块内引用变量必须写 !VAR! 延迟展开；
+    rem 写成 %VAR% 取到的是"块解析那一刻"的值（空），实测会把新库误判成"已就绪"。
     set "TABLE_COUNT="
     "%MYSQL_EXE%" -h 127.0.0.1 -P 3306 -u %MYSQL_USER% -p%MYSQL_PASSWORD% -N -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%DB_NAME%'" > "%TEMP%\mewchat-tables.txt" 2>nul
     for /f "usebackq tokens=*" %%c in ("%TEMP%\mewchat-tables.txt") do set "TABLE_COUNT=%%c"
-    if "%TABLE_COUNT%"=="" set "TABLE_COUNT=0"
+    if "!TABLE_COUNT!"=="" set "TABLE_COUNT=0"
 
-    if not "%TABLE_COUNT%"=="0" (
-        echo   [OK] 数据库已就绪（%TABLE_COUNT% 张表）
+    if not "!TABLE_COUNT!"=="0" (
+        echo   [OK] 数据库已就绪（!TABLE_COUNT! 张表）
         echo   [i]  如需升级表结构，请按 README 的顺序手动执行 sql/ 下的迁移脚本
     ) else (
         echo   [..] 数据库为空，按 01 -^> 06 顺序建库建表
@@ -196,11 +198,13 @@ echo ============ 启动中，日志如下（按 Ctrl+C 停止） ============
 echo   接口地址 : http://127.0.0.1:%APP_PORT%
 echo   演示账号 : alice / admin，密码都是 123456
 echo   数据库   : %DB_NAME%@127.0.0.1:3306
+echo   （该库名会通过 --spring.datasource.url 传给应用，与上面检查的是同一个库）
 if /i "%MODE%"=="fake" echo   模型     : 本地假端点 %LLM_BASE_URL%（未就绪则走追问）
 echo ==========================================================
 echo.
 
-java -jar "%JAR%"
+set "JDBC_URL=jdbc:mysql://127.0.0.1:3306/%DB_NAME%?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+java -jar "%JAR%" --spring.datasource.url="%JDBC_URL%"
 
 echo.
 echo 应用已退出。
