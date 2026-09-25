@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -388,23 +389,92 @@ public class FakeOpenAi {
     /**
      * 按提示词里出现的事实决定回答分片。
      *
+     * <p><b>判据必须是"各工具出参独有的字段名"，不能用价格之类的共享数值。</b>
+     * 这里踩过一个只有真跑才会暴露的坑：原先四条分支里前两条按价格判断
+     * （{@code contains("499.00")} → 商品回答），而<b>订单工具的出参里也含这个金额</b>
+     * （"实付金额：￥499.00"），于是问"MC202409240001 这单到哪了"会被答成
+     * "无线蓝牙耳机 Pro 售价 499 元，库存 128 件" —— 订单数据里根本没有库存，
+     * 这是<b>内容错误但格式完全正常</b>的回答，日志与状态码全都看不出问题。
+     *
+     * <p>现在先按工具独有字段分流（{@code 库存：} 只有商品工具有、
+     * {@code 最新轨迹：} 只有物流工具有、{@code 退换货政策：} 只有退款工具有），
+     * 商品再用价格区分。订单分支<b>从提示词里取出事实再复述</b>（订单号、状态、承运商），
+     * 不凭空编造内容。
+     *
      * @param prompt 完整提示词
      * @return 分片列表
      */
     private static List<String> fragmentsFor(String prompt) {
-        if (prompt.contains("499.00")) {
-            return List.of("无线蓝牙耳机 Pro", "售价 499 元，", "库存 128 件，现货充足。");
+        // 商品工具：出参里有"库存："（订单工具没有这个字段）
+        if (prompt.contains("库存：")) {
+            if (prompt.contains("499.00")) {
+                return List.of("无线蓝牙耳机 Pro", "售价 499 元，", "库存 128 件，现货充足。");
+            }
+            if (prompt.contains("258.00")) {
+                return List.of("智能保温杯 500ml", "售价 258 元，", "库存 75 件，现货充足。");
+            }
+            return List.of("这件商品目前在售，", "价格与库存以商品工具返回的结果为准。");
         }
-        if (prompt.contains("258.00")) {
-            return List.of("智能保温杯 500ml", "售价 258 元，", "库存 75 件，现货充足。");
+        // 物流工具：出参里有"最新轨迹："与"运单号 "（带空格，避免匹配到订单出参里的"物流："）
+        if (prompt.contains("最新轨迹：") || prompt.contains("运单号 ")) {
+            return List.of("您的订单已由顺丰速运发出，", "最新轨迹：", "杭州西湖集散中心，预计明天送达。");
+        }
+        // 订单工具：出参里有"订单状态："与"实付金额："，从提示词里取事实复述
+        if (prompt.contains("订单状态：") || prompt.contains("实付金额：")) {
+            String orderNo = cut(lineValue(prompt, "订单号 "), "，");
+            String status = cut(lineValue(prompt, "订单状态："), "（");
+            String carrier = lineValue(prompt, "物流：");
+            List<String> reply = new ArrayList<>();
+            reply.add(orderNo.isEmpty()
+                    ? "已为您查到这笔订单。"
+                    : "订单 " + orderNo + " 当前状态：" + status + "。");
+            if (!carrier.isEmpty()) {
+                reply.add("承运商与运单号：" + carrier + "。");
+            }
+            reply.add("需要每一步轨迹的话，可以直接问我这笔订单的物流。");
+            return reply;
+        }
+        // 退款工具：出参里有"退换货政策："
+        if (prompt.contains("退换货政策：")) {
+            return List.of("该类目的退换货政策如下：", "具体期限与条件以政策工具返回的结果为准。");
         }
         if (prompt.contains("赠送品") || prompt.contains("赠品")) {
             return List.of("赠品随主商品一起发出。", "若赠品缺货，", "会在到货后 3 个工作日内单独寄出。");
         }
-        if (prompt.contains("顺丰速运") || prompt.contains("运单号")) {
-            return List.of("您的订单已由顺丰速运发出，", "最新轨迹：", "杭州西湖集散中心，预计明天送达。");
-        }
         return List.of("您好，", "我按您提供的信息查了一下，", "以下是查询结果。");
+    }
+
+    /**
+     * 从提示词里取"以某个标签开头的那一行"的标签后内容。
+     *
+     * <p>提示词里的换行是 JSON 转义后的两个字符（反斜杠 + n），不是真正的换行符，
+     * 因此两种形态都要当作分隔符切分。
+     *
+     * @param prompt 完整提示词
+     * @param label  标签（含其后的分隔符，如 {@code "订单状态："}）
+     * @return 标签后的内容；没有该标签时返回空串
+     */
+    private static String lineValue(String prompt, String label) {
+        for (String raw : prompt.split("\\\\n|\\r?\\n")) {
+            String line = raw.trim();
+            int index = line.indexOf(label);
+            if (index >= 0) {
+                return line.substring(index + label.length()).trim();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 截到某个分隔符之前。
+     *
+     * @param text 原文
+     * @param sep  分隔符
+     * @return 分隔符之前的部分；不含分隔符时返回原文
+     */
+    private static String cut(String text, String sep) {
+        int index = text.indexOf(sep);
+        return index < 0 ? text : text.substring(0, index).trim();
     }
 
     /**
