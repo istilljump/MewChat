@@ -415,6 +415,7 @@ public class ChatSupervisor {
     private ChatReply buildReply(ChatContext context) {
         return ChatReply.builder()
                 .sessionId(context.getSessionId())
+                .messageId(context.getAssistantMessageId())
                 .content(context.getReplyText())
                 .intent(context.getIntent())
                 .confidence(context.effectiveConfidence())

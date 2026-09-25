@@ -5,6 +5,8 @@ import com.mewchat.agent.ChatState;
 import com.mewchat.agent.ChatStreamListener;
 import com.mewchat.agent.IntentType;
 import com.mewchat.agent.supervisor.ChatSupervisor;
+import com.mewchat.common.exception.BizException;
+import com.mewchat.common.result.ResultCode;
 import com.mewchat.common.security.TokenCodec;
 import com.mewchat.config.AuthProperties;
 import static com.mewchat.common.security.AuthenticatedUser.TYPE_CUSTOMER;
@@ -470,6 +472,95 @@ class ChatControllerTest {
     void staticResourceRelaxationShouldNotOpenDataApis() throws Exception {
         mockMvc.perform(get("/api/chat/session/{sessionId}/history", SESSION_ID))
                 .andExpect(status().isUnauthorized());
+    }
+
+    /* ==================== 用户反馈（点赞/点踩） ==================== */
+
+    /**
+     * 反馈必须登录：未带令牌应 401，且在进入业务层之前就被拦下。
+     */
+    @Test
+    void feedbackWithoutTokenShouldBeRejected() throws Exception {
+        mockMvc.perform(post("/api/chat/message/{id}/feedback", 1L)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"vote\":\"up\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(20001));
+    }
+
+    /**
+     * 反馈要落库并回显落库后的取值（前端据此确认状态）。
+     */
+    @Test
+    void feedbackShouldBeStoredAndEchoedBack() throws Exception {
+        Message updated = assistantMessage();
+        updated.setFeedback(MessageService.FEEDBACK_DOWN);
+        given(messageService.recordFeedback(updated.getId(), USER_ID, MessageService.FEEDBACK_DOWN))
+                .willReturn(updated);
+
+        mockMvc.perform(post("/api/chat/message/{id}/feedback", updated.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"vote\":\"down\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data").value("down"));
+
+        verify(messageService).recordFeedback(updated.getId(), USER_ID, MessageService.FEEDBACK_DOWN);
+    }
+
+    /**
+     * 反馈值只能是 up / down：写成别的应当在参数层就被拒，
+     * 而不是带着一个无意义的值进服务层（那会让统计里混进脏数据）。
+     */
+    @Test
+    void feedbackWithUnknownVoteShouldBeRejected() throws Exception {
+        mockMvc.perform(post("/api/chat/message/{id}/feedback", 1L)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"vote\":\"maybe\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(10001))
+                // 提示要指向"取值不合法"，而不是让人去查 JSON 语法与编码 ——
+                // 后者会把排查方向带偏（这条曾一度复用"请求体格式不正确"的通用提示）
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("up 或 down")));
+    }
+
+    /**
+     * 反馈别人的消息必须被拒，且不与"消息不存在"区分（防枚举）。
+     *
+     * <p>断言的是服务层抛出的同一个口径：接口层只是把它转成 Result，
+     * 真正的不变量在 {@code MessageService.recordFeedback} 里（由真库用例覆盖）。
+     */
+    @Test
+    void feedbackOnOthersMessageShouldBeRejected() throws Exception {
+        given(messageService.recordFeedback(1L, USER_ID, MessageService.FEEDBACK_UP))
+                .willThrow(new BizException(ResultCode.FORBIDDEN, "消息不存在或无权访问"));
+
+        mockMvc.perform(post("/api/chat/message/{id}/feedback", 1L)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"vote\":\"up\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(20002))
+                .andExpect(jsonPath("$.message").value("消息不存在或无权访问"));
+    }
+
+    /**
+     * 历史接口要带上已有反馈，前端刷新后才能回显"当时投的是哪一边"。
+     */
+    @Test
+    void historyShouldCarryExistingFeedback() throws Exception {
+        given(conversationService.getOwnedBySessionId(SESSION_ID, USER_ID))
+                .willReturn(Conversation.builder().sessionId(SESSION_ID).userId(USER_ID).build());
+        Message assistant = assistantMessage();
+        assistant.setFeedback(MessageService.FEEDBACK_UP);
+        given(messageService.listAllBySessionId(SESSION_ID)).willReturn(List.of(assistant));
+
+        mockMvc.perform(get("/api/chat/session/{sessionId}/history", SESSION_ID)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].feedback").value("up"));
     }
 
     /* ==================== 辅助 ==================== */

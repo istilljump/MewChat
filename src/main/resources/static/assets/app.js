@@ -241,6 +241,8 @@
                     agentName: message.agentName,
                     confidence: message.confidence
                 });
+                // 历史里带着已有反馈，按钮要回显当时的选择（否则刷新后看起来像没反馈过）
+                renderActions(card, message.id, message.feedback);
             }
         });
         scrollToBottom();
@@ -350,20 +352,58 @@
         }
     }
 
-    /** 点赞/点踩：接口尚未实现，如实告知而不是假装提交成功 */
-    function renderActions(card) {
+    /**
+     * 渲染点赞/点踩。
+     *
+     * @param card      回答卡片的节点集合
+     * @param messageId 该条回答落库后的消息ID；为空表示没落库，此时不渲染按钮 ——
+     *                  点了也只会收到"消息不存在"，不如不给
+     * @param current   已有反馈（"up"/"down"），来自历史接口，用于回显
+     */
+    function renderActions(card, messageId, current) {
         card.actions.innerHTML = '';
-        ['👍', '👎'].forEach(function (icon) {
+        if (!messageId) {
+            card.actions.hidden = true;
+            return;
+        }
+
+        var buttons = {};
+        [['up', '👍', '这条回答有用'], ['down', '👎', '这条回答没用']].forEach(function (item) {
+            var vote = item[0];
             var button = document.createElement('button');
             button.type = 'button';
-            button.className = 'icon-btn';
-            button.textContent = icon;
-            button.addEventListener('click', function () {
-                toast('反馈功能尚未接入后端（当前版本不做静默假成功）');
-            });
+            button.className = 'icon-btn' + (current === vote ? ' voted' : '');
+            button.textContent = item[1];
+            button.title = item[2] + (current === vote ? '（已反馈，可改）' : '');
+            button.addEventListener('click', function () { submitFeedback(card, messageId, vote, buttons); });
+            buttons[vote] = button;
             card.actions.appendChild(button);
         });
         card.actions.hidden = false;
+    }
+
+    /**
+     * 提交反馈。
+     *
+     * <p>成功就更新高亮（可改主意，服务端以后写覆盖先写）；
+     * 失败则如实提示错误、<b>不改动高亮</b> —— 界面上显示"已反馈"而服务端没存下来，
+     * 是比报错更糟的结果（用户以为自己的意见被记录了）。
+     */
+    async function submitFeedback(card, messageId, vote, buttons) {
+        try {
+            var saved = await api('/api/chat/message/' + encodeURIComponent(messageId) + '/feedback', {
+                method: 'POST',
+                body: { vote: vote }
+            });
+            Object.keys(buttons).forEach(function (key) {
+                buttons[key].className = 'icon-btn' + (key === saved ? ' voted' : '');
+                buttons[key].title = (key === 'up' ? '这条回答有用' : '这条回答没用')
+                    + (key === saved ? '（已反馈，可改）' : '');
+            });
+            toast(saved === 'down' ? '已记录：这条回答没帮上忙' : '已记录：这条回答有用');
+        } catch (e) {
+            toast('反馈提交失败：' + e.message);
+        }
     }
 
     /* ==================== 新对话 ==================== */
@@ -427,7 +467,7 @@
             el.send.disabled = false;
             // 失败的回答不给点赞/点踩：对一条没答出来的回复收集"满意度"没有意义
             if (succeeded) {
-                renderActions(card);
+                renderActions(card, card.messageId, null);
             }
             card.progress.hidden = true;
             await loadSessions().catch(function () { /* 列表刷新失败不影响本轮对话 */ });
@@ -497,6 +537,9 @@
                     card.body.textContent = finalText;
                     renderCitations(card, payload.data && payload.data.citations);
                     renderMeta(card, payload.data || {});
+                    // 记下落库消息ID：点赞/点踩要指出"给哪条消息反馈"。
+                    // 服务端落库失败时它是空的，那种情况下不渲染反馈按钮
+                    card.messageId = payload.data && payload.data.messageId;
                 } else if (event.name === 'error') {
                     failure = payload.message || '处理失败';
                 }

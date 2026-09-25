@@ -4,6 +4,8 @@ import com.mewchat.agent.ChatReply;
 import com.mewchat.agent.supervisor.ChatSupervisor;
 import com.mewchat.api.chat.dto.ChatMessageView;
 import com.mewchat.api.chat.dto.ChatSendRequest;
+import com.mewchat.api.chat.dto.FeedbackRequest;
+import com.mewchat.api.chat.dto.FeedbackVote;
 import com.mewchat.api.chat.dto.SessionView;
 import com.mewchat.common.exception.BizException;
 import com.mewchat.common.result.Result;
@@ -196,6 +198,30 @@ public class ChatController {
         return emitter;
     }
 
+    /**
+     * 对某条助手回答提交反馈（点赞 / 点踩）。
+     *
+     * <p>三个约束都在服务层（见 {@code MessageService.recordFeedback}）：
+     * 归属必须沿"消息 → 会话 → 用户"校验、只能对助手消息反馈、重复反馈覆盖前一次。
+     * 这里只做参数校验与响应封装 —— 规则写在服务层，将来多一个入口（比如工单里补反馈）
+     * 才不会因为漏改而失效。
+     *
+     * @param messageId 消息ID
+     * @param request   反馈请求体
+     * @param user      当前登录用户
+     * @return 落库后的反馈取值（up / down），供前端确认状态
+     * @throws BizException 消息不存在、不属于当前用户，或不是助手消息时抛出
+     */
+    @PostMapping("/message/{messageId}/feedback")
+    public Result<FeedbackVote> feedback(@PathVariable Long messageId,
+                                         @Valid @RequestBody FeedbackRequest request,
+                                         @AuthenticationPrincipal AuthenticatedUser user) {
+        Message updated = messageService.recordFeedback(
+                messageId, requireUserId(user), request.vote().stored());
+        log.info("用户反馈已落库：messageId={} vote={}", messageId, request.vote().value());
+        return Result.success(FeedbackVote.of(updated.getFeedback()));
+    }
+
     /* ==================== 流式任务 ==================== */
 
     /**
@@ -268,7 +294,8 @@ public class ChatController {
                 message.getCreateTime(),
                 message.getAgentName(),
                 message.getConfidence(),
-                citations);
+                citations,
+                FeedbackVote.of(message.getFeedback()));
     }
 
     /**

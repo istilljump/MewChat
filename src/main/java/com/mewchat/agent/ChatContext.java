@@ -181,6 +181,15 @@ public class ChatContext {
     /** 本轮总耗时（毫秒） */
     private Long costMs;
 
+    /**
+     * 本轮助手回复落库后的消息ID。
+     *
+     * <p>由 {@code persist} 阶段回填，用于让 {@code done} 事件带上它 ——
+     * 前端点赞/点踩要指出"给哪条消息反馈"，而这个ID只有落库之后才存在。
+     * 不填也照样能跑（反馈接口会报"消息不存在"），因此落库失败时不阻断本轮。
+     */
+    private Long assistantMessageId;
+
     /* ==================== 行为方法 ==================== */
 
     /**

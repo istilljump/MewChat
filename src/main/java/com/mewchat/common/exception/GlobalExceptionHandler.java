@@ -1,11 +1,13 @@
 package com.mewchat.common.exception;
 
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.mewchat.common.result.Result;
 import com.mewchat.common.result.ResultCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.util.StringUtils;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -88,8 +90,43 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     @ResponseStatus(HttpStatus.OK)
     public Result<Void> handleMessageNotReadable(HttpMessageNotReadableException e) {
-        log.warn("请求体无法解析（多为 JSON 语法错误或编码非 UTF-8）：{}", e.getMessage());
+        log.warn("请求体无法解析：{}", e.getMessage());
+
+        // 区分两种成因："JSON 本身有问题"与"JSON 没问题、只是某个字段的取值不合法"。
+        // 后者的典型是枚举字段传了未知值（{"vote":"maybe"}）：统一回"请求体格式不正确"
+        // 会让调用方去检查 JSON 与编码，方向完全错了。
+        // 取值不合法的提示来自我们自己的 @JsonCreator（例如"反馈值只能是 up 或 down"），
+        // 这里把它取出来回给调用方 —— 只取一行、截断长度，避免把任意内容原样回显。
+        String fieldMessage = extractValueMessage(e);
+        if (fieldMessage != null) {
+            return Result.error(ResultCode.PARAM_INVALID, fieldMessage);
+        }
         return Result.error(ResultCode.PARAM_INVALID, "请求体格式不正确，请确认是合法 JSON 且按 UTF-8 编码");
+    }
+
+    /**
+     * 从解析异常的因果链里取出"字段取值不合法"的说明。
+     *
+     * <p>Jackson 会把 {@code @JsonCreator} 抛出的异常层层包装，因此这里沿因果链找
+     * 第一个带消息的取值类异常；找不到（说明确实是 JSON 语法/编码问题）时返回 null，
+     * 由调用方给出通用提示。
+     *
+     * @param e 请求体解析异常
+     * @return 面向调用方的说明；不是"取值不合法"时返回 null
+     */
+    private String extractValueMessage(HttpMessageNotReadableException e) {
+        for (Throwable cause = e.getCause(); cause != null; cause = cause.getCause()) {
+            // 只认 JsonMappingException（字段映射/取值问题），不认 JsonParseException ——
+            // 后者是 JSON 语法或编码问题，那条路径的提示由调用方给出
+            if (cause instanceof JsonMappingException mapping) {
+                String raw = mapping.getOriginalMessage();
+                if (StringUtils.hasText(raw)) {
+                    String oneLine = raw.replaceAll("\\s+", " ").trim();
+                    return "参数取值不合法：" + (oneLine.length() > 120 ? oneLine.substring(0, 120) : oneLine);
+                }
+            }
+        }
+        return null;
     }
 
     /**

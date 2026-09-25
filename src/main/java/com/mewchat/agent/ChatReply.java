@@ -25,6 +25,14 @@ public class ChatReply {
     /** 会话业务ID */
     private final String sessionId;
 
+    /**
+     * 本轮助手回复落库后的消息ID，供前端对这条回答提交反馈。
+     *
+     * <p>落库失败时为 null —— 那种情况下前端会隐藏反馈按钮，
+     * 而不是点了之后收到"消息不存在"。
+     */
+    private final Long messageId;
+
     /** 回复文本，直接展示给用户 */
     private final String content;
 

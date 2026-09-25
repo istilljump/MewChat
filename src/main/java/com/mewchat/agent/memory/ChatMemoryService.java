@@ -234,10 +234,11 @@ public class ChatMemoryService {
      * 参数列表会长到无法阅读，而上下文对象本就承载着这些信息。
      *
      * @param context 已执行完毕的对话上下文
+     * @return 落库后的消息ID；没有可保存内容时返回 null
      */
-    public void saveAssistantReply(ChatContext context) {
+    public Long saveAssistantReply(ChatContext context) {
         if (!StringUtils.hasText(context.getReplyText())) {
-            return;
+            return null;
         }
 
         Message message = Message.builder()
@@ -257,6 +258,9 @@ public class ChatMemoryService {
                 .build();
         messageService.save(message);
         conversationService.touchOnNewMessage(context.getSessionId(), LocalDateTime.now());
+        // 把主键回填给上下文：done 事件要带上它，前端点赞才有的放矢
+        context.setAssistantMessageId(message.getId());
+        return message.getId();
     }
 
     /* ==================== 生成摘要 ==================== */

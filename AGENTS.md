@@ -1613,9 +1613,10 @@ README 与 `docs/demo-runbook.md` 同步：新增"给应用建专用账号"的�
 | 自动化限制（如实记录） | 本轮浏览器自动化**无法投递指针事件**（Playwright 的 `click` 与坐标点击都超时，而 `fill`／页面内 `element.click()` 正常；页面探测确认按钮可见且是最顶层元素）。因此交互改用**页面内真实事件**驱动（`form.requestSubmit()`、`element.click()`）—— 它们与用户点击走同一条事件处理路径，应用自身逻辑全被真实执行；但不能据此声称"真实鼠标点击已验收"。 |
 
 **未做/已知限制**：回答不做 Markdown 渲染（纯文本 + 换行，模型输出的列表符号按原样显示）；
-点赞点踩无后端；移动端只隐藏侧边栏、未做完整适配；前端没有自动化测试
+移动端只隐藏侧边栏、未做完整适配；前端没有自动化测试
 （本次是人工/浏览器验证，CSS 与 DOM 断言不在单测覆盖内）；
 `conversation.title` 对历史数据为空（旧会话显示"（无标题）"，新会话才有标题）。
+（点赞/点踩当时只有界面，已在阶段 18 接入后端。）
 
 #### 四、连通性复查抓到并修掉的前端 bug：每发一条消息都清屏
 
@@ -1691,6 +1692,58 @@ appendUserBubble(text);
 
 复验（浏览器 + 真库）：订单问题 → "订单 MC202409240001 当前状态：已发货。
 承运商与运单号：顺丰速运 SF1234567890。"；商品问题 → 商品价格与库存，均正常。
+
+### 阶段 18 用户反馈（点赞/点踩）接入后端（2026-09-25）
+
+阶段 17 里点赞/点踩只有界面（点了提示"未接入后端"），本阶段把它接成真后端。
+
+| 位置 | 内容 |
+| --- | --- |
+| `sql/07_message_feedback.sql` | `message` 表新增 `feedback`（1 有用 / 2 无用 / NULL 未反馈）与 `feedback_time` |
+| `dao/mysql/entity/Message` | 两个字段；注释写明"清空反馈需要 `FieldStrategy.ALWAYS`"的坑 |
+| `service/MessageService(+Impl)` | 常量 `FEEDBACK_UP/DOWN` + `recordFeedback(messageId, userId, vote)`：归属校验、只许对助手消息、后写覆盖 |
+| `api/chat/dto` | `FeedbackVote` 枚举（对外 `up`/`down`，对内 1/2）、`FeedbackRequest` |
+| `api/chat/ChatController` | `POST /api/chat/message/{messageId}/feedback`；历史视图新增 `feedback` 字段供回显 |
+| `agent` | `ChatContext.assistantMessageId` + `ChatReply.messageId`：**落库后的消息ID随 `done` 事件下发** |
+| `static/assets/app.js` | 按钮接真接口、高亮当前选择、可改主意、刷新后从历史回显 |
+
+**几个刻意的选择，以及为什么**：
+
+- **用列而不是新表**：反馈与消息严格一对一、生命周期完全跟随消息，独立建表只多一次 join。
+- **只能对助手消息反馈**：用户消息没有"有用/没用"的语义，放开只会让统计里混进一半无意义的数据。
+- **归属校验沿"消息 → 会话 → 用户"这条链**，且不通过时返回与会话历史<b>同口径</b>的
+  "消息不存在或无权访问" —— 能区分"不存在"与"不是你的"，就等于告诉调用方这个ID确实存在，
+  可被用来枚举他人的消息。校验走 `ConversationService` 而不是自己查会话表：绕开 service 直接摸 dao，分层就不作数了。
+- **对外 `up`/`down`、对内 1/2**：前端不必记"1 是有用还是 2 是有用"，而服务端的取值来源仍只有一处（`MessageService` 的常量），
+  不会出现"接口层写死 1、服务层改了常量"的静默错位。
+- **允许改主意**：后写覆盖先写。保留历史投票需要审计表，而这里要的是"用户最终怎么看这条回答"。
+- **消息ID 必须进 `done` 事件**：否则刚流式答完的那条回答，前端根本不知道它的ID，点赞无从下手。
+  为此让 `ChatMemoryService.saveAssistantReply` 返回主键并回填到 `ChatContext`
+  （落库在构造回复之前，因此这条路是顺的）。落库失败时为 null，此时前端<b>不渲染按钮</b> ——
+  给一个按下去只会报"消息不存在"的按钮，不如不给。
+- **失败不假装成功**：提交失败时保持高亮不变并弹出错误。界面显示"已反馈"而服务端没存下来，
+  比报错更糟（用户以为意见被记录了）。
+
+**顺带修掉的一处误导性提示**：非法取值（`{"vote":"maybe"}`）原先返回
+`10001 请求体格式不正确，请确认是合法 JSON 且按 UTF-8 编码` —— JSON 其实完全合法，
+这个提示会把人送去检查编码。现在区分两种成因：`JsonMappingException`（字段映射/取值问题）
+取其中一行给出"参数取值不合法：反馈值只能是 up 或 down"；`JsonParseException`（语法/编码）
+仍走阶段 11 的通用提示。提示只取一行并截断 120 字，不把任意内容原样回显。
+
+**验证**：
+
+| 项 | 结果 |
+| --- | --- |
+| `./mvnw clean package`（默认） | **`Tests run: 277, Failures: 0, Errors: 0, Skipped: 47`** |
+| `-Dmewchat.it.mysql=true`（门控） | **`Tests run: 277, Failures: 0, Errors: 0, Skipped: 0`** |
+| 新增测试 | `ChatControllerTest` +5（未登录 401、落库并回显、非法取值 10001 且提示指向 up/down、越权 20002、历史带 feedback）；`MysqlPersistenceFixesIntegrationTest` +3（落库+改主意+**消息ID回填到上下文**、别人的消息被拒且口径一致、用户消息被拒） |
+| 迁移脚本 | 已在开发库执行：`feedback tinyint NULL`、`feedback_time datetime NULL` 两列到位 |
+| 真容器 + 浏览器 | `done` 事件带 messageId；点 👍 → 高亮 + 提示"已记录：这条回答有用"；改成 👎 → 高亮转移；**纯刷新后**打开该会话，👎 仍处于选中态（状态来自历史接口）；越权/非法值的返回同测试 |
+
+**未做（如实记录）**：统计总览里还没有反馈聚合（"点赞率"这类指标）；
+不支持反馈备注文本；后台也没有"按反馈筛选消息"的入口；
+`feedback` 的清空路径没做（当前业务只需 1↔2 覆盖，将来若要"取消反馈"，
+注意 `Message` 实体那一列需要显式 `FieldStrategy.ALWAYS`）。
 
 ### 运行前置条件
 

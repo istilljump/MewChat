@@ -277,6 +277,13 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
 
 .icon-btn:hover { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--ink); }
 
+/* 已反馈的按钮：填充主色，一眼看出当时投的是哪一边（可再点另一边改主意） */
+.icon-btn.voted {
+    background: var(--accent);
+    box-shadow: none;
+    transform: translate(1px, 1px);
+}
+
 .notice-badge {
     display: inline-block;
     padding: 0 6px;

@@ -72,9 +72,9 @@ set "MYSQL_PASSWORD=你的密码"
 # 建库
 mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS mewchat DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
 
-# 按顺序执行建表脚本（01 → 05 顺序不能乱，03/04 是 ALTER，不可重复执行）
+# 按顺序执行建表脚本（01 → 07 顺序不能乱，03/04/07 是 ALTER，不可重复执行）
 for f in sql/01_schema.sql sql/02_knowledge_chunk.sql sql/03_pending_clarification.sql \
-         sql/04_question_cluster.sql sql/05_question_length.sql; do
+         sql/04_question_cluster.sql sql/05_question_length.sql sql/07_message_feedback.sql; do
   mysql -u root -p --default-character-set=utf8mb4 --database=mewchat < "$f"
 done
 
@@ -151,7 +151,8 @@ http://127.0.0.1:8080/
 登录页预填了演示账号（`alice` / `123456`，见上面的种子数据），进去之后是
 "小喵 · 智能客服"：左侧是会话记录（标题取首条提问），右侧是对话区 ——
 回答流式逐字出现，引用会渲染成 `[1]` 角标并列出《文档》第 N 段与相关度，
-兜底回答会带"已转人工"标记。源码在 `src/main/resources/static/`。
+兜底回答会带"已转人工"标记，每条回答下面有 👍/👎（**真实落库**：可改主意，刷新后仍显示当时的选择）。
+源码在 `src/main/resources/static/`。
 
 页面本身免认证（否则第一次打开只会看到一串 401 JSON），但页面里的
 每个数据请求都要令牌 —— 登录换到的令牌存在浏览器本地，退出即清除。

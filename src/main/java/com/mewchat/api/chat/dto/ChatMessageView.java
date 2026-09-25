@@ -21,6 +21,7 @@ import java.util.List;
  * @param agentName  处理该问题的专家节点名（如 RagSpecialist），用户消息为 null
  * @param confidence 本轮置信度，用户消息为 null
  * @param citations  引用的知识片段，供前端展示"参考来源"；无引用时为空列表
+ * @param feedback   当前用户对这条回答的反馈：up / down；未反馈为 null
  * @author MewChat
  */
 public record ChatMessageView(
@@ -38,7 +39,9 @@ public record ChatMessageView(
 
         BigDecimal confidence,
 
-        List<CitationView> citations) {
+        List<CitationView> citations,
+
+        FeedbackVote feedback) {
 
     /**
      * 引用来源。

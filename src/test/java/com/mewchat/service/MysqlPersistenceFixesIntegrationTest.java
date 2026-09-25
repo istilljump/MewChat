@@ -489,6 +489,88 @@ class MysqlPersistenceFixesIntegrationTest {
                 .isLessThan(ids.indexOf(firstSession));
     }
 
+    /* ==================== 用户反馈（点赞/点踩） ==================== */
+
+    /**
+     * 反馈能落库、能改主意，并且<b>助手回复落库时会把消息ID回填给上下文</b>。
+     *
+     * <p>最后这一点是本功能的关键一环：{@code done} 事件靠它把 messageId 交给前端，
+     * 前端才有的放矢地提交反馈。断了的表现是"点赞按钮永远不出现"，
+     * 不报任何错 —— 单测（Mock 的 Mapper 不回填主键）与接口测试都覆盖不到。
+     */
+    @Test
+    void feedbackShouldBeStoredChangeableAndMessageIdBackfilled() {
+        String sessionId = newSessionId();
+        conversationService.getOrCreate(sessionId, 1L);
+
+        ChatContext context = ChatContext.builder()
+                .sessionId(sessionId)
+                .userMessage("七天无理由怎么退")
+                .replyText("签收后 7 天内可申请。")
+                .finalState(ChatState.REPLY)
+                .build();
+        Long messageId = chatMemoryService.saveAssistantReply(context);
+
+        assertThat(messageId).as("落库要返回消息ID").isNotNull();
+        assertThat(context.getAssistantMessageId())
+                .as("消息ID必须回填到上下文，否则 done 事件带不上它、前端没有反馈按钮")
+                .isEqualTo(messageId);
+
+        Message afterUp = messageService.recordFeedback(messageId, 1L, MessageService.FEEDBACK_UP);
+        assertThat(afterUp.getFeedback()).isEqualTo(MessageService.FEEDBACK_UP);
+        assertThat(afterUp.getFeedbackTime()).as("反馈时间要落库，供后续统计").isNotNull();
+
+        Message afterDown = messageService.recordFeedback(messageId, 1L, MessageService.FEEDBACK_DOWN);
+        assertThat(afterDown.getFeedback())
+                .as("允许改主意：后写覆盖先写")
+                .isEqualTo(MessageService.FEEDBACK_DOWN);
+    }
+
+    /**
+     * 反馈别人的消息必须被拒，且提示与"消息不存在"相同（不透露存在性）。
+     *
+     * <p>不校验归属的后果：消息ID 一旦泄露，别人就能给任意回答点赞/点踩，
+     * 把所有反馈统计污染成噪声。
+     */
+    @Test
+    void feedbackOnForeignMessageShouldBeRejected() {
+        String sessionId = newSessionId();
+        conversationService.getOrCreate(sessionId, 1L);
+        Long messageId = chatMemoryService.saveAssistantReply(ChatContext.builder()
+                .sessionId(sessionId)
+                .userMessage("问题")
+                .replyText("回答")
+                .finalState(ChatState.REPLY)
+                .build());
+
+        assertThatThrownBy(() -> messageService.recordFeedback(messageId, 999_111_222L,
+                MessageService.FEEDBACK_UP))
+                .as("别人的消息不能反馈，且提示不区分'不存在'与'不是你的'")
+                .hasMessageContaining("消息不存在或无权访问");
+
+        assertThatThrownBy(() -> messageService.recordFeedback(999_111_222_333L, 1L,
+                MessageService.FEEDBACK_UP))
+                .as("不存在的消息同样是这个口径")
+                .hasMessageContaining("消息不存在或无权访问");
+    }
+
+    /**
+     * 只能对助手的回答反馈：用户消息没有"有用/没用"的语义，
+     * 放开只会让统计里混进一半无意义的数据。
+     */
+    @Test
+    void feedbackOnUserMessageShouldBeRejected() {
+        String sessionId = newSessionId();
+        conversationService.getOrCreate(sessionId, 1L);
+        chatMemoryService.saveUserMessage(sessionId, "我自己的提问");
+        Long userMessageId = messageService.listAllBySessionId(sessionId).get(0).getId();
+
+        assertThatThrownBy(() -> messageService.recordFeedback(userMessageId, 1L,
+                MessageService.FEEDBACK_DOWN))
+                .as("用户消息不能被点赞/点踩")
+                .hasMessageContaining("只能对助手的回答做反馈");
+    }
+
     /* ==================== 辅助 ==================== */
 
     /**

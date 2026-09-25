@@ -115,9 +115,9 @@ if not exist "%MYSQL_EXE%" (
         echo   [OK] 数据库已就绪（!TABLE_COUNT! 张表）
         echo   [i]  如需升级表结构，请按 README 的顺序手动执行 sql/ 下的迁移脚本
     ) else (
-        echo   [..] 数据库为空，按 01 -^> 06 顺序建库建表
+        echo   [..] 数据库为空，按 01 -^> 07 顺序建库建表
         "%MYSQL_EXE%" -h 127.0.0.1 -P 3306 -u %MYSQL_USER% -p%MYSQL_PASSWORD% -e "CREATE DATABASE IF NOT EXISTS %DB_NAME% DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;" 2>nul
-        for %%f in (01_schema 02_knowledge_chunk 03_pending_clarification 04_question_cluster 05_question_length 06_demo_seed) do (
+        for %%f in (01_schema 02_knowledge_chunk 03_pending_clarification 04_question_cluster 05_question_length 06_demo_seed 07_message_feedback) do (
             "%MYSQL_EXE%" -h 127.0.0.1 -P 3306 -u %MYSQL_USER% -p%MYSQL_PASSWORD% --default-character-set=utf8mb4 --database=%DB_NAME% < "sql\%%f.sql" 2>>"%TEMP%\mewchat-mysql-err.txt"
             if errorlevel 1 (
                 echo      [X] sql\%%f.sql 执行失败，原因：

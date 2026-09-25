@@ -94,6 +94,20 @@ public class Message {
     /** 失败原因，仅 status=0 时有值 */
     private String errorMsg;
 
+    /**
+     * 用户对这条回答的反馈：1 有用 / 2 无用，null 表示未反馈。
+     *
+     * <p>取值见 {@code MessageService.FEEDBACK_UP / FEEDBACK_DOWN}。
+     * <b>清空反馈要注意</b>：MyBatis-Plus 默认忽略值为 null 的字段，
+     * 想让这一列变回 null 必须显式 {@code FieldStrategy.ALWAYS}（本项目在
+     * {@code pending_clarification} 上踩过同一个坑）。当前业务只做"改主意"（1↔2），
+     * 不需要清空，因此保持默认策略。
+     */
+    private Integer feedback;
+
+    /** 最近一次反馈的时间，未反馈时为 null */
+    private LocalDateTime feedbackTime;
+
     /** 创建时间，插入时自动填充。本表无更新时间 */
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;

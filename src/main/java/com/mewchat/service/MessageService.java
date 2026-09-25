@@ -33,4 +33,39 @@ public interface MessageService extends IService<Message> {
      * @return 消息列表，时间正序
      */
     List<Message> listAllBySessionId(String sessionId);
+
+    /* ==================== 用户反馈（点赞/点踩） ==================== */
+
+    /**
+     * 反馈：这条回答有用。
+     *
+     * <p>public 是为了让接口层把实体里的数值映射成对外的 up/down 时引用同一份定义，
+     * 就像工单状态那样只有一处取值来源。
+     */
+    int FEEDBACK_UP = 1;
+
+    /** 反馈：这条回答没用，语义与取值见 {@link #FEEDBACK_UP} 的说明 */
+    int FEEDBACK_DOWN = 2;
+
+    /**
+     * 记录用户对某条助手回答的反馈（点赞 / 点踩）。
+     *
+     * <p><b>必须校验归属，且校验方式与会话读取一致</b>：消息ID 是雪花ID，
+     * 但它和会话ID 一样被别人拿到就等于拿到了对话内容的一部分。
+     * 因此这里沿消息 → 会话 → 用户这条链校验，不通过时返回与会话历史<b>同样口径</b>的
+     * "不存在或无权访问"（不区分"消息不存在"与"不是你的消息"，否则可被用来枚举他人的消息）。
+     *
+     * <p><b>只允许对助手消息反馈</b>：用户消息没有"有用/没用"的语义，
+     * 放开只会让统计里混进一半无意义的数据。
+     *
+     * <p><b>可改主意</b>：重复反馈覆盖前一次（保留最后一次选择与时间）。
+     *
+     * @param messageId 消息ID
+     * @param userId    当前用户ID
+     * @param vote      反馈值，取值见 {@link #FEEDBACK_UP} / {@link #FEEDBACK_DOWN}
+     * @return 更新后的消息
+     * @throws com.mewchat.common.exception.BizException 消息不存在、不属于该用户、
+     *                                                   不是助手消息，或反馈值非法时抛出
+     */
+    Message recordFeedback(Long messageId, Long userId, int vote);
 }
