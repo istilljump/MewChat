@@ -198,6 +198,20 @@
         el.emptyState.hidden = true;
     }
 
+    /**
+     * 首次发言时把"空状态提示"收起来，但<b>不动已有的消息</b>。
+     *
+     * <p>不能用 clearMessages()：那会把整屏消息清掉 —— 一条条聊下去时，
+     * 每次发言都会把之前的问答全部抹掉，用户只看得见最后一条。
+     * （这个 bug 正是真实浏览器里发现的：连问两次后页面上只剩一轮问答。）
+     */
+    function hideEmptyState() {
+        el.emptyState.hidden = true;
+        if (el.emptyState.parentNode) {
+            el.emptyState.parentNode.removeChild(el.emptyState);
+        }
+    }
+
     async function openSession(sessionId) {
         if (state.sending) { return; }
         state.currentSessionId = sessionId;
@@ -393,22 +407,28 @@
         el.send.disabled = true;
         el.input.value = '';
         el.input.style.height = 'auto';
-        clearMessages();
+        // 只收起空状态提示，不清屏：连续对话必须看得见前面的问答
+        hideEmptyState();
         appendUserBubble(text);
 
         var card = appendAnswerCard();
         card.progress.hidden = false;
         card.progress.textContent = '正在处理';
 
+        var succeeded = false;
         try {
             await streamReply(sessionId, text, card);
+            succeeded = true;
         } catch (e) {
             card.progress.hidden = true;
             card.body.textContent = '本轮处理失败：' + e.message;
         } finally {
             state.sending = false;
             el.send.disabled = false;
-            renderActions(card);
+            // 失败的回答不给点赞/点踩：对一条没答出来的回复收集"满意度"没有意义
+            if (succeeded) {
+                renderActions(card);
+            }
             card.progress.hidden = true;
             await loadSessions().catch(function () { /* 列表刷新失败不影响本轮对话 */ });
             scrollToBottom();
