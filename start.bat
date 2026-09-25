@@ -52,6 +52,13 @@ echo   [OK] Maven Wrapper 就绪
 if not exist "local.env.bat" call :init_local_env
 call "local.env.bat"
 
+rem 三项配置必须齐全：缺任一项时，后面的 MySQL 检查会以"连不上"的形态失败，
+rem 报错指向数据库连接而不是配置本身，排查方向会被带偏（阶段 16 真实踩过）
+if not defined MYSQL_USER     call :env_missing MYSQL_USER
+if not defined MYSQL_PASSWORD call :env_missing MYSQL_PASSWORD
+if not defined DB_NAME        call :env_missing DB_NAME
+if defined ENV_MISSING goto :fail
+
 echo   [OK] 本地配置 local.env.bat（库 %DB_NAME%，账号 %MYSQL_USER%）
 
 if /i "%MODE%"=="check" goto :check_only
@@ -199,10 +206,18 @@ echo   接口地址 : http://127.0.0.1:%APP_PORT%
 echo   演示账号 : alice / admin，密码都是 123456
 echo   数据库   : %DB_NAME%@127.0.0.1:3306
 echo   （该库名会通过 --spring.datasource.url 传给应用，与上面检查的是同一个库）
+echo   （库名与账号都会传给应用，与上面检查的是同一个库、同一个账号）
 if /i "%MODE%"=="fake" echo   模型     : 本地假端点 %LLM_BASE_URL%（未就绪则走追问）
 echo ==========================================================
 echo.
 
+rem 账号名要做一次改名转交：本脚本的配置项叫 MYSQL_USER，而应用读的是
+rem MYSQL_USERNAME（application.yml 里的 ${MYSQL_USERNAME:root}）。
+rem 不转交时应用会用默认的 root，而口令又由本文件继承（两个名字恰好同名），
+rem 结果就是"脚本检查 A 账号、应用连 B 账号"的静默错位 —— 用 root 连库时看不出来，
+rem 一旦库账号不是 root（如只授权单库的专用账号）就变成连不上库（阶段 16 踩到）。
+rem 口令不进命令行参数：进程列表里能看到参数，环境变量则不会那样暴露。
+set "MYSQL_USERNAME=%MYSQL_USER%"
 set "JDBC_URL=jdbc:mysql://127.0.0.1:3306/%DB_NAME%?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
 java -jar "%JAR%" --spring.datasource.url="%JDBC_URL%"
 
@@ -211,6 +226,15 @@ echo 应用已退出。
 goto :end_hold
 
 rem ============================== 辅助 ==============================
+
+:env_missing
+rem 配置项缺失/为空时的统一出口。%~1 为缺的配置项名。
+echo   [X] local.env.bat 里的 %~1 是空的。
+echo       常见原因：①该项确实没填；②文件换行不是 CRLF —— cmd 解析 .bat 要求 CRLF，
+echo       LF-only 的文件会让 set 行被劈开、静默不执行（阶段 16 踩到过）。
+echo       不确定就删掉 local.env.bat 重新运行本脚本，会自动生成一份。
+set "ENV_MISSING=1"
+goto :eof
 
 :init_local_env
 rem 首次运行：按探测结果生成配置，不做交互提问 —— set /p 在输入被重定向时
