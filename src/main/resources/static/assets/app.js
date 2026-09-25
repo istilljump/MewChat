@@ -40,6 +40,7 @@
         app: document.getElementById('app'),
         who: document.getElementById('who'),
         logout: document.getElementById('logout'),
+        clearAll: document.getElementById('clear-all'),
         sessions: document.getElementById('session-list'),
         newSession: document.getElementById('new-session'),
         messages: document.getElementById('messages'),
@@ -56,6 +57,67 @@
         el.toast.hidden = false;
         clearTimeout(toast._timer);
         toast._timer = setTimeout(function () { el.toast.hidden = true; }, 2600);
+    }
+
+    /**
+     * 把服务端的时间串转成人话。
+     *
+     * <p>服务端给的是 {@code yyyy-MM-dd HH:mm:ss}，直接铺在侧边栏里既长又难扫读；
+     * "刚刚 / 12 分钟前 / 今天 15:04 / 昨天 09:30 / 09-24 16:12" 扫一眼就知道先后。
+     * 解析失败时原样返回 —— 时间显示不出来不该让整个列表崩掉。
+     *
+     * @param text 服务端时间串
+     * @return 展示用的相对时间
+     */
+    function humanTime(text) {
+        if (!text) { return ''; }
+        var time = new Date(String(text).replace(' ', 'T'));
+        if (isNaN(time.getTime())) { return text; }
+
+        var now = new Date();
+        var seconds = (now.getTime() - time.getTime()) / 1000;
+        if (seconds < 60) { return '刚刚'; }
+        if (seconds < 3600) { return Math.floor(seconds / 60) + ' 分钟前'; }
+
+        var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+        var clock = pad(time.getHours()) + ':' + pad(time.getMinutes());
+        if (time.toDateString() === now.toDateString()) { return '今天 ' + clock; }
+
+        var yesterday = new Date(now.getTime() - 24 * 3600 * 1000);
+        if (time.toDateString() === yesterday.toDateString()) { return '昨天 ' + clock; }
+
+        return (time.getMonth() + 1) + '-' + time.getDate() + ' ' + clock;
+    }
+
+    /**
+     * 复制文本到剪贴板。
+     *
+     * <p>优先用 Clipboard API；不可用时退回"临时 textarea + execCommand"——
+     * 后者虽已过时，但在非安全上下文（用局域网 IP 打开页面）里是唯一可行的办法，
+     * 而用户复制回答正文的需求与此无关，不该因为环境而点不动。
+     *
+     * @param text 待复制文本
+     * @return Promise，成功 resolve、失败 reject
+     */
+    function copyText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve, reject) {
+            var area = document.createElement('textarea');
+            area.value = text;
+            area.style.position = 'fixed';
+            area.style.opacity = '0';
+            document.body.appendChild(area);
+            area.select();
+            try {
+                document.execCommand('copy') ? resolve() : reject(new Error('浏览器拒绝了复制'));
+            } catch (e) {
+                reject(e);
+            } finally {
+                document.body.removeChild(area);
+            }
+        });
     }
 
     function scrollToBottom() {
@@ -138,6 +200,24 @@
 
     el.logout.addEventListener('click', function () { signOut(); });
 
+    // 清空全部会话：与单项删除同一套两步确认
+    el.clearAll.addEventListener('click', function () {
+        if (!el.clearAll.classList.contains('armed')) {
+            el.clearAll.classList.add('armed');
+            el.clearAll.textContent = '确认清空？';
+            clearTimeout(el.clearAll._timer);
+            el.clearAll._timer = setTimeout(function () {
+                el.clearAll.classList.remove('armed');
+                el.clearAll.textContent = '清空';
+            }, 3000);
+            return;
+        }
+        clearTimeout(el.clearAll._timer);
+        el.clearAll.classList.remove('armed');
+        el.clearAll.textContent = '清空';
+        clearAllSessions();
+    });
+
     async function enterApp() {
         el.loginLayer.hidden = true;
         el.app.hidden = false;
@@ -145,6 +225,7 @@
         el.emptyState.hidden = false;
         el.messages.innerHTML = '';
         el.messages.appendChild(el.emptyState);
+        renderEmptyStateExamples();
         await loadSessions();
     }
 
@@ -166,10 +247,12 @@
             return;
         }
         state.sessions.forEach(function (session, index) {
-            var item = document.createElement('button');
-            item.type = 'button';
+            // 用 div 而不是 button：里面还要放"删除"按钮，按钮套按钮是无效 HTML
+            var item = document.createElement('div');
             item.className = 'session-item' + (session.sessionId === state.currentSessionId ? ' active' : '');
             item.dataset.sessionId = session.sessionId;
+            item.title = (session.title || '未命名会话');
+            item.addEventListener('click', function () { openSession(session.sessionId); });
 
             var no = document.createElement('div');
             no.className = 'session-no';
@@ -177,18 +260,90 @@
 
             var title = document.createElement('span');
             title.className = 'session-title';
-            title.textContent = session.title || '（无标题）';
+            title.textContent = session.title || '（未命名会话）';
 
             var meta = document.createElement('div');
             meta.className = 'session-meta';
-            meta.textContent = (session.messageCount || 0) + ' 条 · ' + (session.lastMessageTime || '');
+            meta.textContent = (session.messageCount || 0) + ' 条 · ' + humanTime(session.lastMessageTime);
+
+            var del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'session-del';
+            del.textContent = '×';
+            del.title = '删除这段会话';
+            // 两步确认而不是 window.confirm：原生弹窗打断操作流、样式也无法统一；
+            // 这里点一次变成"确认删除"、再点一次才真删，3 秒不动自动恢复
+            del.addEventListener('click', function (event) {
+                event.stopPropagation();
+                if (!del.classList.contains('armed')) {
+                    del.classList.add('armed');
+                    del.textContent = '确认删除';
+                    clearTimeout(del._timer);
+                    del._timer = setTimeout(function () {
+                        del.classList.remove('armed');
+                        del.textContent = '×';
+                    }, 3000);
+                    return;
+                }
+                clearTimeout(del._timer);
+                deleteSession(session);
+            });
 
             item.appendChild(no);
             item.appendChild(title);
             item.appendChild(meta);
-            item.addEventListener('click', function () { openSession(session.sessionId); });
+            item.appendChild(del);
             el.sessions.appendChild(item);
         });
+    }
+
+    /**
+     * 删除一段会话（连同它的消息）。
+     *
+     * <p>删的是"正在看的这一段"时，视图要回到空状态 —— 否则屏幕还留着一段
+     * 服务端已经不存在的内容，再发消息会因为会话已被删除而失败。
+     *
+     * @param session 会话列表项
+     */
+    async function deleteSession(session) {
+        if (state.sending) {
+            toast('正在回答中，稍后再删');
+            return;
+        }
+        try {
+            var messages = await api('/api/chat/session/' + encodeURIComponent(session.sessionId), {
+                method: 'DELETE'
+            });
+            if (state.currentSessionId === session.sessionId) {
+                state.currentSessionId = '';
+                clearMessages();
+                el.emptyState.hidden = false;
+                el.messages.appendChild(el.emptyState);
+            }
+            await loadSessions();
+            toast('已删除该会话（含 ' + messages + ' 条消息）');
+        } catch (e) {
+            toast('删除失败：' + e.message);
+        }
+    }
+
+    /** 清空自己的全部会话（同样两步确认，见按钮上的 armed 逻辑） */
+    async function clearAllSessions() {
+        if (state.sending) {
+            toast('正在回答中，稍后再清空');
+            return;
+        }
+        try {
+            var deleted = await api('/api/chat/sessions', { method: 'DELETE' });
+            state.currentSessionId = '';
+            clearMessages();
+            el.emptyState.hidden = false;
+            el.messages.appendChild(el.emptyState);
+            await loadSessions();
+            toast(deleted > 0 ? ('已清空 ' + deleted + ' 段会话') : '没有可清空的会话');
+        } catch (e) {
+            toast('清空失败：' + e.message);
+        }
     }
 
     /* ==================== 历史与渲染 ==================== */
@@ -243,6 +398,8 @@
                 });
                 // 历史里带着已有反馈，按钮要回显当时的选择（否则刷新后看起来像没反馈过）
                 renderActions(card, message.id, message.feedback);
+                renderCopyAction(card);
+                // 引用来源的标题也顺手记下来，便于"复制"时一并带走（正文已含来源列表）
             }
         });
         scrollToBottom();
@@ -257,6 +414,73 @@
         row.appendChild(bubble);
         el.messages.appendChild(row);
         scrollToBottom();
+    }
+
+    /**
+     * 空状态：可点击的示例问题。
+     *
+     * <p>把例子做成"点一下就直接问"而不是纯文字提示：第一次用的人不用想"我该问什么"，
+     * 也顺手示范了这台客服能答哪几类问题（订单 / 物流 / 知识 / 商品）。
+     */
+    function renderEmptyStateExamples() {
+        var examples = el.emptyState.querySelector('.examples');
+        if (!examples || examples.dataset.ready === '1') { return; }
+        examples.dataset.ready = '1';
+        ['MC202409240001 这单到哪了', '七天无理由退货怎么操作', '耳机多少钱', '你们支持开发票吗']
+            .forEach(function (question) {
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'example-q';
+                button.textContent = question;
+                button.addEventListener('click', function () { sendText(question); });
+                examples.appendChild(button);
+            });
+    }
+
+    /**
+     * 回答卡片底部的一排小工具：复制正文。
+     *
+     * <p>客服回答里常有订单号、金额、政策期限，用户要拿去用 —— 让他手抄是最不人性的做法。
+     * 复制失败如实提示，不假装成功。
+     *
+     * @param card 回答卡片节点
+     */
+    function renderCopyAction(card) {
+        if (card.tools.querySelector('.copy-btn')) { return; }
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'icon-btn copy-btn';
+        button.textContent = '⧉';
+        button.title = '复制这段回答';
+        button.addEventListener('click', function () {
+            copyText(card.body.textContent)
+                .then(function () { toast('回答已复制'); })
+                .catch(function () { toast('复制失败，可手动选中文字复制'); });
+        });
+        card.tools.appendChild(button);
+        card.tools.hidden = false;
+    }
+
+    /**
+     * 渲染"重试"：本轮失败时把同一条问题再发一次。
+     *
+     * <p>失败后要用户重新打一遍字，是最容易被骂的那种设计 —— 问题原文就在手上，直接重发。
+     *
+     * @param card 本轮的回答卡片
+     * @param text 用户原始提问
+     */
+    function renderRetryAction(card, text) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'icon-btn retry-btn';
+        button.textContent = '↻';
+        button.title = '重新发送这条问题';
+        button.addEventListener('click', function () {
+            button.disabled = true;
+            sendText(text);
+        });
+        card.tools.appendChild(button);
+        card.tools.hidden = false;
     }
 
     /** 新建一条助手回答卡片，返回可继续填充的几个节点 */
@@ -280,20 +504,21 @@
         var meta = document.createElement('div');
         meta.className = 'answer-meta';
 
-        var actions = document.createElement('div');
-        actions.className = 'answer-actions';
-        actions.hidden = true;
+        var tools = document.createElement('div');
+        tools.className = 'answer-actions';
+        tools.hidden = true;
 
         card.appendChild(progress);
         card.appendChild(body);
         card.appendChild(sources);
         card.appendChild(meta);
-        card.appendChild(actions);
+        card.appendChild(tools);
         row.appendChild(card);
         el.messages.appendChild(row);
         scrollToBottom();
 
-        return { row: row, card: card, progress: progress, body: body, sources: sources, meta: meta, actions: actions };
+        return { row: row, card: card, progress: progress, body: body, sources: sources,
+                 meta: meta, actions: tools, tools: tools };
     }
 
     /**
@@ -434,7 +659,23 @@
 
     async function send() {
         var text = el.input.value.trim();
-        if (!text || state.sending) { return; }
+        if (!text) { return; }
+        // 先清空输入框：发送失败时也有"重试"按钮兜底，不必把文字留在框里占地方
+        el.input.value = '';
+        el.input.style.height = 'auto';
+        await sendText(text);
+    }
+
+    /**
+     * 发送一条消息并渲染流式回答。
+     *
+     * <p>与 {@link send} 分开，是因为"重试"与"点示例问题"都要绕过输入框直接发送，
+     * 而它们与手动发送走的是同一条路径（同一套渲染与错误处理）。
+     *
+     * @param text 用户消息文本
+     */
+    async function sendText(text) {
+        if (state.sending || !text) { return; }
         var sessionId;
         try {
             sessionId = await ensureSession();
@@ -462,12 +703,15 @@
         } catch (e) {
             card.progress.hidden = true;
             card.body.textContent = '本轮处理失败：' + e.message;
+            // 失败给"重试"而不是让用户把问题重打一遍；原文就在手上
+            renderRetryAction(card, text);
         } finally {
             state.sending = false;
             el.send.disabled = false;
-            // 失败的回答不给点赞/点踩：对一条没答出来的回复收集"满意度"没有意义
             if (succeeded) {
+                // 答出来了才给点赞/点踩：对一条没答出来的回复收集"满意度"没有意义
                 renderActions(card, card.messageId, null);
+                renderCopyAction(card);
             }
             card.progress.hidden = true;
             await loadSessions().catch(function () { /* 列表刷新失败不影响本轮对话 */ });
@@ -488,7 +732,10 @@
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json; charset=UTF-8',
-                'Accept': 'text/event-stream',
+                // 必须同时声明两种：成功是事件流、失败是统一 JSON。
+                // 只写 text/event-stream 的话，参数校验失败时服务端写不出 JSON 错误体
+                // （内容协商失败），客户端只拿到一个空的 HTTP 400，看不到原因
+                'Accept': 'text/event-stream, application/json',
                 'Authorization': 'Bearer ' + state.token
             },
             body: JSON.stringify({ sessionId: sessionId, message: text })
@@ -498,8 +745,18 @@
             signOut('登录已过期，请重新登录');
             throw new Error('登录已过期');
         }
+        // 服务端并非总会回 SSE：参数校验失败（消息过长、会话ID非法等）走的是统一 JSON 结构。
+        // 一律优先采用响应体里的 message —— 只报"HTTP 400"等于把"哪里不合法"丢掉，
+        // 用户只能猜；连响应体都没有时才退回状态码
+        if ((resp.headers.get('Content-Type') || '').indexOf('text/event-stream') < 0) {
+            var rawBody = await resp.text();
+            var parsedError = rawBody ? safeParse(rawBody) : null;
+            if (parsedError && parsedError.message) {
+                throw new Error(parsedError.message);
+            }
+            throw new Error('服务返回了非预期的响应（HTTP ' + resp.status + '）');
+        }
         if (!resp.ok) {
-            // 归属校验失败等业务错误会以非流式 JSON 返回（HTTP 200 + 业务码走下面的解析）
             throw new Error('HTTP ' + resp.status);
         }
 

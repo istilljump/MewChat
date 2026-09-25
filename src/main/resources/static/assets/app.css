@@ -131,8 +131,15 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
     min-width: 0;
 }
 
-.sidebar-title {
+.sidebar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     margin: 14px 12px 10px;
+}
+
+.sidebar-title {
     padding: 8px 12px;
     font-weight: 700;
     background: var(--accent);
@@ -140,9 +147,20 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
     box-shadow: 3px 3px 0 var(--ink);
 }
 
+/* 清空全部：平时是低调的文字按钮，进入确认态才变醒目（避免手滑） */
+.link-btn.armed {
+    padding: 3px 8px;
+    color: var(--paper);
+    background: var(--danger);
+    border: 2px solid var(--ink);
+    text-decoration: none;
+    font-weight: 700;
+}
+
 .session-list { flex: 1; overflow-y: auto; padding: 4px 12px 12px; }
 
 .session-item {
+    position: relative;
     width: 100%;
     margin-bottom: 10px;
     padding: 8px 10px;
@@ -156,6 +174,56 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
 
 .session-item:hover { background: #fff7e6; }
 .session-item.active { background: #ffe6bc; }
+
+/* 删除按钮：默认隐形，鼠标移到该条才出现 —— 平时不干扰阅读 */
+.session-del {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    padding: 0 6px;
+    font: inherit;
+    font-size: 14px;
+    line-height: 20px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .1s ease;
+}
+
+.session-item:hover .session-del,
+.session-del:focus { opacity: 1; }
+
+/* 确认态：文字变长、底色变红，再点一次才真删 */
+.session-del.armed {
+    opacity: 1;
+    color: var(--paper);
+    background: var(--danger);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+/* 空状态的示例问题：点一下就直接问 */
+.examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 14px;
+}
+
+.example-q {
+    font: inherit;
+    font-size: 14px;
+    padding: 6px 12px;
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+    cursor: pointer;
+}
+
+.example-q:hover { background: var(--accent); transform: translate(1px, 1px); box-shadow: 2px 2px 0 var(--ink); }
 
 .session-no { font-size: 12px; font-weight: 700; color: var(--muted); }
 .session-title {
@@ -284,6 +352,9 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
     transform: translate(1px, 1px);
 }
 
+/* 重试按钮：失败的回答旁边，颜色提示这是"再来一次"而不是普通操作 */
+.icon-btn.retry-btn { background: #ffe3e3; border-color: var(--danger); }
+
 .notice-badge {
     display: inline-block;
     padding: 0 6px;
@@ -334,4 +405,9 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
     .app { grid-template-columns: 1fr; }
     .sidebar { display: none; }
     .answer-card, .bubble-user { max-width: 92%; }
+}
+
+/* 触屏设备没有 hover：删除按钮必须常显，否则点了也没入口 */
+@media (hover: none) {
+    .session-del { opacity: 1; }
 }

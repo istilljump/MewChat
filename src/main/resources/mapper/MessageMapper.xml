@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+    消息表的手写 SQL。
+
+    只有"批量取每个会话的首条消息"这一条：单表 CRUD 由 BaseMapper 覆盖，
+    而"按会话分组取每组最小ID那一行"用条件构造器表达不出来（要子查询 + join）。
+
+    写法上刻意显式列出列名，不用 SELECT *：这个查询只服务"侧边栏预览"，
+    取回整行（含 ref_docs 这类大字段）纯属浪费，而且实体将来加字段时会把它一起捞出来。
+-->
+<mapper namespace="com.mewchat.dao.mysql.mapper.MessageMapper">
+
+    <!--
+        批量取多个会话各自的"首条指定角色消息"。
+
+        子查询按 session_id 分组取 MIN(id)：id 是雪花ID且写入有序，
+        因此最小 id 就是该会话最早的那条消息 —— 不依赖 create_time
+        （同一毫秒内写入的两条消息，create_time 可能相同，id 不会）。
+
+        角色由参数传入（Java 侧用 ChatConstants.ROLE_USER），不在 SQL 里写死字符串：
+        角色名的定义只有一处，将来调整也不会漏改这里。
+    -->
+    <select id="firstMessagesBySessionIds" resultType="com.mewchat.dao.mysql.entity.Message">
+        SELECT m.session_id, m.content
+        FROM message m
+        JOIN (
+            SELECT session_id, MIN(id) AS first_id
+            FROM message
+            WHERE role = #{role}
+              AND session_id IN
+            <foreach collection="sessionIds" item="sid" open="(" separator="," close=")">
+                #{sid}
+            </foreach>
+            GROUP BY session_id
+        ) f ON m.id = f.first_id
+    </select>
+</mapper>

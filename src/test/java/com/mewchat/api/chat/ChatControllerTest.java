@@ -13,6 +13,7 @@ import static com.mewchat.common.security.AuthenticatedUser.TYPE_CUSTOMER;
 import com.mewchat.dao.mysql.entity.Conversation;
 import com.mewchat.dao.mysql.entity.Message;
 import com.mewchat.dao.mysql.entity.MessageRefDoc;
+import com.mewchat.service.ConversationCleanupService;
 import com.mewchat.service.ConversationService;
 import com.mewchat.service.MessageService;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,8 +38,10 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -94,6 +97,9 @@ class ChatControllerTest {
 
     @MockitoBean
     private MessageService messageService;
+
+    @MockitoBean
+    private ConversationCleanupService cleanupService;
 
     /**
      * 把流式任务线程池换成同步执行，替代品只在本用例内生效。
@@ -561,6 +567,97 @@ class ChatControllerTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].feedback").value("up"));
+    }
+
+    /* ==================== 会话清理 ==================== */
+
+    /**
+     * 删除会话要落到清理服务，且归属取令牌里的用户ID。
+     */
+    @Test
+    void deleteSessionShouldCallCleanupWithTokenUserId() throws Exception {
+        given(cleanupService.deleteMine(SESSION_ID, USER_ID)).willReturn(2);
+
+        mockMvc.perform(delete("/api/chat/session/{sessionId}", SESSION_ID)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data").value(2));
+
+        verify(cleanupService).deleteMine(SESSION_ID, USER_ID);
+    }
+
+    /**
+     * 未登录不能删会话，且清理服务不该被调用（在安全层就被拦下）。
+     */
+    @Test
+    void deleteSessionWithoutTokenShouldBeRejected() throws Exception {
+        mockMvc.perform(delete("/api/chat/session/{sessionId}", SESSION_ID))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(20001));
+
+        verify(cleanupService, never()).deleteMine(anyString(), anyLong());
+    }
+
+    /**
+     * 清空接口同样只认令牌里的用户，返回删除的会话数。
+     */
+    @Test
+    void deleteAllSessionsShouldReturnDeletedCount() throws Exception {
+        given(cleanupService.deleteAllMine(USER_ID)).willReturn(7);
+
+        mockMvc.perform(delete("/api/chat/sessions")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(7));
+
+        verify(cleanupService).deleteAllMine(USER_ID);
+    }
+
+    /**
+     * 无标题的历史会话要用"首个用户提问"兜底显示，而不是让用户看到"（无标题）"。
+     *
+     * <p>只读不写库：标题仍是空，只是展示时补上预览；已有标题的会话不该被查（省一次查询）。
+     */
+    @Test
+    void sessionsWithoutTitleShouldFallBackToFirstQuestion() throws Exception {
+        given(conversationService.listMine(USER_ID, 0)).willReturn(List.of(
+                Conversation.builder().sessionId(SESSION_ID).userId(USER_ID).title("").messageCount(2).build(),
+                Conversation.builder().sessionId("another").userId(USER_ID)
+                        .title("已经命名的会话").messageCount(2).build()));
+        given(messageService.firstUserMessages(List.of(SESSION_ID), 100))
+                .willReturn(java.util.Map.of(SESSION_ID, "这是用户问的第一句话"));
+
+        mockMvc.perform(get("/api/chat/sessions")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].title").value("这是用户问的第一句话"))
+                .andExpect(jsonPath("$.data[1].title").value("已经命名的会话"));
+
+        verify(messageService).firstUserMessages(List.of(SESSION_ID), 100);
+    }
+
+    /**
+     * <b>流式接口的参数校验失败必须回可读的 JSON 原因</b>，而不是一个空的 HTTP 400。
+     *
+     * <p>这条钉的是一个真实踩过的坑：send 接口成功时回事件流、失败时回统一 JSON，
+     * 若客户端只声明 {@code Accept: text/event-stream}，JSON 错误体就会因内容协商失败
+     * 而写不出去 —— 用户在页面上只看到"HTTP 400"，完全不知道是消息太长。
+     * 因此调用方要同时声明两种类型（前端已如此），这里用同样的 Accept 断言服务端行为。
+     */
+    @Test
+    void validationFailureOnStreamEndpointShouldReturnReadableReason() throws Exception {
+        mockMvc.perform(post("/api/chat/send")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .header(HttpHeaders.ACCEPT, "text/event-stream, application/json")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sessionId\":\"" + SESSION_ID + "\",\"message\":\""
+                                + "长".repeat(com.mewchat.common.constant.ChatConstants.MAX_MESSAGE_LENGTH + 1)
+                                + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(10001))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("消息长度不能超过")));
     }
 
     /* ==================== 辅助 ==================== */

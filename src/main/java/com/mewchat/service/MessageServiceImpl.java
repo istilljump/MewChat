@@ -11,12 +11,15 @@ import com.mewchat.dao.mysql.mapper.MessageMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 消息业务服务实现。
@@ -135,5 +138,32 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
             throw new BizException(ResultCode.PARAM_INVALID, "只能对助手的回答做反馈");
         }
         return message;
+    }
+
+    @Override
+    public Map<String, String> firstUserMessages(List<String> sessionIds, int limit) {
+        if (CollectionUtils.isEmpty(sessionIds)) {
+            return Map.of();
+        }
+        // IN 列表必须封顶：会话数没有上限，把上千个 ID 拼进一条 SQL 既慢又可能超出
+        // 语句长度限制。截断的后果只是"部分历史会话仍显示无标题"，不影响正确性
+        List<String> capped = sessionIds.size() <= limit ? sessionIds : sessionIds.subList(0, limit);
+        Map<String, String> previews = new HashMap<>();
+        for (Message message : baseMapper.firstMessagesBySessionIds(capped, ChatConstants.ROLE_USER)) {
+            if (StringUtils.hasText(message.getContent())) {
+                previews.putIfAbsent(message.getSessionId(), message.getContent());
+            }
+        }
+        return previews;
+    }
+
+    @Override
+    public int deleteBySessionIds(List<String> sessionIds) {
+        if (CollectionUtils.isEmpty(sessionIds)) {
+            return 0;
+        }
+        // 用 mapper.delete 而不是 IService.remove：要的是"删了几条"这个数
+        // （用于日志与调用方的统计），remove 只回布尔值
+        return baseMapper.delete(Wrappers.<Message>lambdaQuery().in(Message::getSessionId, sessionIds));
     }
 }

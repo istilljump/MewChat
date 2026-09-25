@@ -15,6 +15,7 @@ import com.mewchat.config.SseProperties;
 import com.mewchat.dao.mysql.entity.Conversation;
 import com.mewchat.dao.mysql.entity.Message;
 import com.mewchat.dao.mysql.entity.MessageRefDoc;
+import com.mewchat.service.ConversationCleanupService;
 import com.mewchat.service.ConversationService;
 import com.mewchat.service.MessageService;
 import jakarta.validation.Valid;
@@ -24,6 +25,8 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -34,6 +37,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 
@@ -69,11 +73,20 @@ public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
+    /** 标题为空的历史会话，取首条提问做预览时的字符上限 */
+    private static final int TITLE_PREVIEW_LENGTH = 24;
+
+    /** 一次最多给多少个无标题会话取预览（避免 IN 列表过长） */
+    private static final int TITLE_PREVIEW_LIMIT = 100;
+
     private final ChatSupervisor chatSupervisor;
 
     private final ConversationService conversationService;
 
     private final MessageService messageService;
+
+    /** 删除会话要连带删消息，编排放在这个协作型服务里（见其类注释） */
+    private final ConversationCleanupService cleanupService;
 
     private final SseProperties sseProperties;
 
@@ -83,11 +96,13 @@ public class ChatController {
     public ChatController(ChatSupervisor chatSupervisor,
                           ConversationService conversationService,
                           MessageService messageService,
+                          ConversationCleanupService cleanupService,
                           SseProperties sseProperties,
                           @Qualifier("sseTaskExecutor") Executor sseExecutor) {
         this.chatSupervisor = chatSupervisor;
         this.conversationService = conversationService;
         this.messageService = messageService;
+        this.cleanupService = cleanupService;
         this.sseProperties = sseProperties;
         this.sseExecutor = sseExecutor;
     }
@@ -123,14 +138,81 @@ public class ChatController {
     @GetMapping("/sessions")
     public Result<List<SessionView>> sessions(@AuthenticationPrincipal AuthenticatedUser user,
                                               @RequestParam(required = false, defaultValue = "0") int limit) {
-        List<SessionView> views = conversationService.listMine(requireUserId(user), limit).stream()
+        List<Conversation> conversations = conversationService.listMine(requireUserId(user), limit);
+        // 没有标题的历史会话用"首个用户提问"做预览：它们建在"首句即标题"上线之前，
+        // 只显示"（无标题）"等于把用户自己说过的话藏起来。只读、不写库（见 service 的说明）
+        Map<String, String> previews = fillMissingTitles(conversations);
+
+        List<SessionView> views = conversations.stream()
                 .map(conversation -> new SessionView(
                         conversation.getSessionId(),
-                        conversation.getTitle(),
+                        resolveTitle(conversation, previews),
                         conversation.getMessageCount(),
                         conversation.getLastMessageTime()))
                 .toList();
         return Result.success(views);
+    }
+
+    /**
+     * 为标题为空的会话取"首个用户提问"作为预览。
+     *
+     * @param conversations 会话列表
+     * @return sessionId → 首条用户提问；没有空标题的会话时返回空表（不发查询）
+     */
+    private Map<String, String> fillMissingTitles(List<Conversation> conversations) {
+        List<String> blankTitleSessionIds = conversations.stream()
+                .filter(conversation -> !StringUtils.hasText(conversation.getTitle()))
+                .map(Conversation::getSessionId)
+                .toList();
+        return messageService.firstUserMessages(blankTitleSessionIds, TITLE_PREVIEW_LIMIT);
+    }
+
+    /**
+     * 取展示用标题：优先用会话标题，其次用首个提问的截断预览，都没有时给一句人话。
+     *
+     * @param conversation 会话
+     * @param previews     首条提问预览
+     * @return 展示用标题
+     */
+    private String resolveTitle(Conversation conversation, Map<String, String> previews) {
+        if (StringUtils.hasText(conversation.getTitle())) {
+            return conversation.getTitle();
+        }
+        String preview = previews.get(conversation.getSessionId());
+        if (!StringUtils.hasText(preview)) {
+            return "（未命名会话）";
+        }
+        String oneLine = preview.replaceAll("\\s+", " ").trim();
+        return oneLine.length() <= TITLE_PREVIEW_LENGTH
+                ? oneLine
+                : oneLine.substring(0, TITLE_PREVIEW_LENGTH) + "…";
+    }
+
+    /**
+     * 删除一个会话及其全部消息（用户清理自己的历史）。
+     *
+     * @param sessionId 会话业务ID
+     * @param user      当前登录用户
+     * @return 删除的消息条数，供前端提示"已删除 N 条消息"
+     * @throws BizException 会话不存在或不属于当前用户时抛出
+     */
+    @DeleteMapping("/session/{sessionId}")
+    public Result<Integer> deleteSession(@PathVariable String sessionId,
+                                         @AuthenticationPrincipal AuthenticatedUser user) {
+        return Result.success(cleanupService.deleteMine(sessionId, requireUserId(user)));
+    }
+
+    /**
+     * 清空当前用户的全部会话（"会话记录"里的一键清理）。
+     *
+     * <p>与会话列表同一个归属口径：只能清自己的，请求里没有任何"清谁的"参数。
+     *
+     * @param user 当前登录用户
+     * @return 本次删除的会话数
+     */
+    @DeleteMapping("/sessions")
+    public Result<Integer> deleteAllSessions(@AuthenticationPrincipal AuthenticatedUser user) {
+        return Result.success(cleanupService.deleteAllMine(requireUserId(user)));
     }
 
     /**
@@ -170,6 +252,13 @@ public class ChatController {
      *         占着 Tomcat 的工作线程会让少量并发就拖垮整个服务（见 {@code config.SseConfig}）</li>
      *     <li><b>线程池满时立即回一个错误事件</b>：队列积压时让请求无限等待，
      *         只会把所有用户一起拖慢；直接告知"稍后重试"更诚实</li>
+     *     <li><b>调用方的 {@code Accept} 必须同时声明事件流与 JSON</b>
+     *         （{@code text/event-stream, application/json}）。成功时回事件流、
+     *         失败（参数校验、归属校验）时回统一 {@code Result} JSON ——
+     *         若客户端只声明 {@code text/event-stream}，失败路径的 JSON 错误体
+     *         会因<b>内容协商失败</b>而写不出去，客户端只看到一个空的 HTTP 400，
+     *         连"哪里不合法"都拿不到（实测踩过：消息超长时前端只显示 HTTP 400）。
+     *         不带 {@code Accept} 的客户端（如 curl 默认）不受影响</li>
      * </ul>
      *
      * @param request 对话请求
@@ -177,7 +266,7 @@ public class ChatController {
      * @return SSE 事件流
      * @throws BizException 会话不属于当前用户时抛出
      */
-    @PostMapping(value = "/send", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping("/send")
     public SseEmitter send(@Valid @RequestBody ChatSendRequest request,
                            @AuthenticationPrincipal AuthenticatedUser user) {
         long userId = requireUserId(user);

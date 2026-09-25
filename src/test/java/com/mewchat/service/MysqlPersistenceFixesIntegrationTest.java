@@ -74,6 +74,9 @@ class MysqlPersistenceFixesIntegrationTest {
     private TicketService ticketService;
 
     @Autowired
+    private ConversationCleanupService cleanupService;
+
+    @Autowired
     private UserMapper userMapper;
 
     /* ==================== 超长文本不能把整条记录带走 ==================== */
@@ -569,6 +572,108 @@ class MysqlPersistenceFixesIntegrationTest {
                 MessageService.FEEDBACK_DOWN))
                 .as("用户消息不能被点赞/点踩")
                 .hasMessageContaining("只能对助手的回答做反馈");
+    }
+
+    /* ==================== 会话清理 ==================== */
+
+    /**
+     * 删除会话要连同它的消息一起删掉，并且之后再也读不到。
+     *
+     * <p>只删会话不删消息的后果：历史接口读不到（归属校验过不了），
+     * 但后台统计里那些消息还在 —— 报表出现"没有会话的消息"，
+     * 用户以为数据已清理、实际留了一份。所以这条断言既看会话也看消息。
+     */
+    @Test
+    void deletingConversationShouldAlsoRemoveItsMessages() {
+        String sessionId = newSessionId();
+        conversationService.getOrCreate(sessionId, 1L);
+        chatMemoryService.saveUserMessage(sessionId, "要被清掉的问题");
+        chatMemoryService.saveAssistantReply(ChatContext.builder()
+                .sessionId(sessionId).userMessage("要被清掉的问题").replyText("回答")
+                .finalState(ChatState.REPLY).build());
+        assertThat(messageService.listAllBySessionId(sessionId)).hasSize(2);
+
+        int messages = cleanupService.deleteMine(sessionId, 1L);
+
+        assertThat(messages).as("返回删除的消息条数").isEqualTo(2);
+        assertThat(messageService.listAllBySessionId(sessionId)).as("消息必须真的没了").isEmpty();
+        assertThat(conversationService.getBySessionId(sessionId)).as("会话也应被逻辑删除").isNull();
+        assertThat(conversationService.listMine(1L, 50)).as("列表里不该再出现")
+                .noneSatisfy(row -> assertThat(row.getSessionId()).isEqualTo(sessionId));
+    }
+
+    /**
+     * 删别人的会话必须被拒，且提示与"会话不存在"一致（不透露存在性）。
+     */
+    @Test
+    void deletingForeignConversationShouldBeRejected() {
+        String sessionId = newSessionId();
+        conversationService.getOrCreate(sessionId, 1L);
+        chatMemoryService.saveUserMessage(sessionId, "别人的会话");
+
+        assertThatThrownBy(() -> cleanupService.deleteMine(sessionId, 999_444_555L))
+                .hasMessageContaining("会话不存在或无权访问");
+        assertThatThrownBy(() -> cleanupService.deleteMine("no-such-session", 1L))
+                .as("不存在的会话同一口径")
+                .hasMessageContaining("会话不存在或无权访问");
+
+        assertThat(messageService.listAllBySessionId(sessionId))
+                .as("被拒之后数据必须原样保留")
+                .hasSize(1);
+    }
+
+    /**
+     * 清空只清自己的：别人的会话一条都不许动。
+     */
+    @Test
+    void deletingAllShouldOnlyTouchMine() {
+        Long mine = 998_666_111L;
+        Long other = 998_666_222L;
+
+        String myFirst = newSessionId();
+        String mySecond = newSessionId();
+        String othersSession = newSessionId();
+        for (String sessionId : List.of(myFirst, mySecond)) {
+            conversationService.getOrCreate(sessionId, mine);
+            chatMemoryService.saveUserMessage(sessionId, "我的话");
+        }
+        conversationService.getOrCreate(othersSession, other);
+        chatMemoryService.saveUserMessage(othersSession, "别人的话");
+
+        int deleted = cleanupService.deleteAllMine(mine);
+
+        assertThat(deleted).as("返回删除的会话数").isEqualTo(2);
+        assertThat(conversationService.listMine(mine, 50)).isEmpty();
+        assertThat(conversationService.getBySessionId(othersSession))
+                .as("别人的会话必须原样保留")
+                .isNotNull();
+        assertThat(messageService.listAllBySessionId(othersSession))
+                .as("别人的消息也不能被顺手删掉")
+                .hasSize(1);
+    }
+
+    /**
+     * "首个用户提问"兜底查询：每个会话取最早那条用户消息，且不越界到别人的会话。
+     */
+    @Test
+    void firstUserMessagesShouldReturnEarliestUserMessagePerSession() {
+        String first = newSessionId();
+        String second = newSessionId();
+        conversationService.getOrCreate(first, 1L);
+        conversationService.getOrCreate(second, 1L);
+
+        chatMemoryService.saveUserMessage(first, "第一句");
+        chatMemoryService.saveAssistantReply(ChatContext.builder()
+                .sessionId(first).userMessage("第一句").replyText("回答")
+                .finalState(ChatState.REPLY).build());
+        chatMemoryService.saveUserMessage(first, "第二句（不该被选中）");
+        chatMemoryService.saveUserMessage(second, "另一个会话的第一句");
+
+        java.util.Map<String, String> previews =
+                messageService.firstUserMessages(List.of(first, second), 100);
+
+        assertThat(previews.get(first)).as("要取最早那条用户消息").isEqualTo("第一句");
+        assertThat(previews.get(second)).isEqualTo("另一个会话的第一句");
     }
 
     /* ==================== 辅助 ==================== */

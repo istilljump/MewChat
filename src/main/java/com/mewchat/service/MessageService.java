@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import com.mewchat.dao.mysql.entity.Message;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 消息业务服务。
@@ -68,4 +69,32 @@ public interface MessageService extends IService<Message> {
      *                                                   不是助手消息，或反馈值非法时抛出
      */
     Message recordFeedback(Long messageId, Long userId, int vote);
+
+    /**
+     * 批量取多个会话的"首个用户提问"，用于给没有标题的历史会话兜底显示。
+     *
+     * <p>只读、不写库：这些会话建在"首句即标题"上线之前，标题是空的。
+     * 与其把它们显示成"（无标题）"，不如用用户自己问的第一句话做预览 ——
+     * 但<b>不把它写回 title</b>：那是"原本没标题"的历史事实，
+     * 悄悄改成"有标题"会让日后分不清哪些是自动命名的。
+     *
+     * @param sessionIds 会话业务ID集合；为空时返回空表（不查库）
+     * @param limit      单次限制（避免 IN 列表过长），见实现里的说明
+     * @return 每个会话一条，{@code sessionId → content}；未命中的会话不在结果里
+     */
+    Map<String, String> firstUserMessages(List<String> sessionIds, int limit);
+
+    /**
+     * 物理删除若干会话下的全部消息。
+     *
+     * <p><b>为什么是物理删除</b>：{@code message} 表没有逻辑删除列
+     * （全库只有 {@code conversation} 有）。会话被清理后，留下来的消息既读不到
+     * （历史接口要求会话归属），又会让后台统计出现"没有会话的消息"这种不一致口径。
+     *
+     * <p>由 {@code ConversationCleanupService} 在事务里调用 —— 消息与会话的删除必须同生共死。
+     *
+     * @param sessionIds 会话业务ID集合；为空时什么都不做
+     * @return 删除的消息条数
+     */
+    int deleteBySessionIds(List<String> sessionIds);
 }

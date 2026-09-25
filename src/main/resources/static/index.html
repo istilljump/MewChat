@@ -38,7 +38,10 @@
 <div id="app" class="app" hidden>
     <!-- 侧边栏：会话记录 -->
     <aside class="sidebar">
-        <div class="sidebar-title">会话记录</div>
+        <div class="sidebar-head">
+            <span class="sidebar-title">会话记录</span>
+            <button id="clear-all" class="link-btn" type="button" title="删除我的全部会话">清空</button>
+        </div>
         <div id="session-list" class="session-list"></div>
         <div class="sidebar-foot">
             <span id="who" class="who"></span>
@@ -62,7 +65,8 @@
         <section id="messages" class="messages">
             <div id="empty-state" class="empty-state">
                 <p>点「＋ 新对话」开始，或从左侧选一段历史会话。</p>
-                <p class="hint">可以问：订单到哪了 / 七天无理由怎么退 / 耳机多少钱 / 邮费是多少</p>
+                <p class="hint">也可以直接点下面的问题试试：</p>
+                <div class="examples"></div>
             </div>
         </section>
 
