@@ -12,6 +12,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.util.StringUtils;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * 大模型 Bean 配置：对话模型、流式对话模型、向量化模型。
  *
@@ -45,6 +48,14 @@ public class AiModelConfig {
      * 两边一旦不同步，告警就会失效，而失效的表现是"没有告警"—— 无人会注意到。
      */
     private static final String PLACEHOLDER_API_KEY = "sk-REPLACE-WITH-YOUR-REAL-KEY";
+
+    /**
+     * 已就占位值告警过的配置项名，见 {@link #validateApiKey}。
+     *
+     * <p>只为去重：类本身由 Spring 单例管理，三个模型 Bean 的构建都在启动期同一条线程上，
+     * 因此不需要额外的同步。
+     */
+    private final Set<String> warnedPlaceholderKeys = new HashSet<>();
 
     /**
      * 同步对话模型。
@@ -167,9 +178,14 @@ public class AiModelConfig {
                             + " 中填写，或设置环境变量 LLM_API_KEY");
         }
         if (PLACEHOLDER_API_KEY.equals(apiKey.trim())) {
-            log.warn("大模型 API Key 仍是占位值（{}）——应用可以启动，但每次模型调用都会失败，"
-                    + "对话将走降级路径（追问/兜底）。接真实模型请设置环境变量 LLM_API_KEY",
-                    configKey);
+            // 同一份 chat 密钥会被三个 Bean（同步/流式/embedding 回退）各校验一次，
+            // 不去重就会在启动日志里连打三遍同样的告警 —— 噪声会让人怀疑"是不是配错了三处"。
+            // 按配置项名去重：真正需要多条的是"不同配置项各自是占位值"这种情况
+            if (warnedPlaceholderKeys.add(configKey)) {
+                log.warn("大模型 API Key 仍是占位值（{}）——应用可以启动，但每次模型调用都会失败，"
+                        + "对话将走降级路径（追问/兜底）。接真实模型请设置环境变量 LLM_API_KEY",
+                        configKey);
+            }
         }
     }
 }

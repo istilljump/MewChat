@@ -399,6 +399,96 @@ class MysqlPersistenceFixesIntegrationTest {
                 .isEqualTo(999001L);
     }
 
+    /* ==================== 会话列表与标题（对话页侧边栏） ==================== */
+
+    /**
+     * 首条用户消息兼作会话标题，且<b>只写一次</b>：后续消息不能把标题改掉。
+     *
+     * <p>"只写一次"是条件更新（UPDATE ... WHERE title 为空）保证的，
+     * 若写成先查后写，用户连发两条消息时标题可能被第二条覆盖 ——
+     * 会话列表里那段对话的标题就会随着最后一句话变来变去。
+     */
+    @Test
+    void titleShouldBeSetOnceFromFirstUserMessage() {
+        String sessionId = newSessionId();
+        conversationService.getOrCreate(sessionId, 1L);
+
+        String first = uniqueQuestion("邮费是多少");
+        chatMemoryService.saveUserMessage(sessionId, first);
+        assertThat(conversationService.getBySessionId(sessionId).getTitle())
+                .as("标题应取首条用户消息")
+                .isEqualTo(first);
+
+        chatMemoryService.saveUserMessage(sessionId, "那满多少包邮呢");
+        assertThat(conversationService.getBySessionId(sessionId).getTitle())
+                .as("第二条消息不能改写标题")
+                .isEqualTo(first);
+    }
+
+    /**
+     * 标题超长时要被截断到列宽内（{@code title} 是 VARCHAR(100)）。
+     *
+     * <p>不截断的后果与真实缺陷同构：MySQL 严格模式下整条 UPDATE 被拒（1406），
+     * 而这里失败只是"标题没写进去"—— 会话列表显示不出内容，却不报任何错。
+     */
+    @Test
+    void overlongTitleShouldBeTruncated() {
+        String sessionId = newSessionId();
+        conversationService.getOrCreate(sessionId, 1L);
+
+        chatMemoryService.saveUserMessage(sessionId, uniqueQuestion("退", 800));
+
+        String title = conversationService.getBySessionId(sessionId).getTitle();
+        assertThat(title)
+                .as("超长标题必须被截断而不是写入失败")
+                .isNotEmpty()
+                .hasSizeLessThanOrEqualTo(100);
+    }
+
+    /**
+     * "我的会话"列表要满足三件事：只看自己的、排除还没说过话的空会话、
+     * 按最近活跃排序。
+     *
+     * <p>过滤与排序失效都不报错 —— 前者让侧边栏被空记录刷满，
+     * 后者让用户在最上面看到一段很久以前的对话。这正是 Mock 验证不了的部分
+     * （Mock 的 Mapper 不会真的按 SQL 过滤与排序）。
+     */
+    @Test
+    void mySessionsShouldBeOwnedNonEmptyAndOrderedByActivity() {
+        Long mine = 998_877_665L;
+        Long other = 998_877_666L;
+
+        String emptySession = newSessionId();
+        conversationService.getOrCreate(emptySession, mine);
+
+        String firstSession = newSessionId();
+        conversationService.getOrCreate(firstSession, mine);
+        chatMemoryService.saveUserMessage(firstSession, uniqueQuestion("第一段对话"));
+
+        String secondSession = newSessionId();
+        conversationService.getOrCreate(secondSession, mine);
+        chatMemoryService.saveUserMessage(secondSession, uniqueQuestion("第二段对话"));
+
+        String othersSession = newSessionId();
+        conversationService.getOrCreate(othersSession, other);
+        chatMemoryService.saveUserMessage(othersSession, uniqueQuestion("别人的对话"));
+
+        List<String> ids = conversationService.listMine(mine, 50).stream()
+                .map(Conversation::getSessionId)
+                .toList();
+
+        assertThat(ids)
+                .as("只看得到自己的会话")
+                .contains(firstSession, secondSession)
+                .doesNotContain(othersSession);
+        assertThat(ids)
+                .as("还没说过话的空会话不进列表")
+                .doesNotContain(emptySession);
+        assertThat(ids.indexOf(secondSession))
+                .as("最近活跃的排前面")
+                .isLessThan(ids.indexOf(firstSession));
+    }
+
     /* ==================== 辅助 ==================== */
 
     /**

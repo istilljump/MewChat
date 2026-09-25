@@ -57,8 +57,13 @@ mybatis-plus:
   configuration:
     # 数据库 snake_case 自动映射到 Java camelCase
     map-underscore-to-camel-case: true
-    # 开发阶段打印 SQL，上线前改为 org.apache.ibatis.logging.nologging.NoLoggingImpl
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # SQL 日志走 slf4j（而不是 stdout）：这样"打不打印 SQL"由下面 logging.level 控制，
+    # 不必改这里。默认压在 info 级（见文件末尾），需要看 SQL 时把 com.mewchat.dao 调成 debug。
+    #
+    # 早先这里配的是 StdOutImpl，后果是**每一条 SQL 与每个 SqlSession 的生命周期都直接打到控制台**：
+    # 一次会话收尾任务能刷出上百行，把真正的业务日志（状态机装配、工具注册、降级告警）
+    # 淹在噪声里 —— 一键启动的日志看起来像出了上百个问题，实际只是日志在刷屏。
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     banner: false
     db-config:
@@ -116,11 +121,22 @@ mewchat:
       max-retries: 2
       # 单次回复最大 token，留空不限制
       # max-completion-tokens: 2048
-      # 开发期打开便于排查提示词与响应，上线前关掉
-      log-requests: true
-      log-responses: true
+      # 提示词与响应的完整内容是否进日志。默认关闭，理由是**里面有用户的问题与回答原文**：
+      # 日志会被采集、转发、长期保存，等于把用户对话抄了一份放到日志系统里
+      # （这与可观测上报那边"不默认打印 payload"是同一条原则）。
+      # 需要排查提示词效果时临时打开，用完记得关。
+      log-requests: false
+      log-responses: false
 
     embedding:
+      # ⚠️ 默认组合下**向量化不可用，这是预期行为**：base-url 留空时复用 chat 的
+      # `https://api.deepseek.com/v1`，而 DeepSeek 并不提供 embeddings 接口，
+      # 于是默认的 model-name（OpenAI 的 text-embedding-3-small）一定调用失败。
+      # 影响范围有限：Milvus 默认关闭，检索走关键词通道，知识问答照常可用；
+      # 向量化失败的文档会在后台如实标成"入库失败"。
+      # 要真正启用向量化，必须同时配好这三项（并让 dimensions 与
+      # mewchat.milvus.dimension 一致）：一个提供 embeddings 的端点、它的模型名、
+      # 它真实的输出维度（text-embedding-3-small 的默认维度是 1536，不是下面的 1024）。
       # 留空则复用 chat 的 api-key 与 base-url
       api-key: ${LLM_EMBEDDING_API_KEY:}
       base-url: ${LLM_EMBEDDING_BASE_URL:}
@@ -331,5 +347,9 @@ logging:
   level:
     root: info
     com.mewchat: debug
+    # SQL 日志（走 slf4j，见 mybatis-plus.configuration.log-impl）默认压掉：
+    # 调成 debug 即可打印全部 SQL 与参数 —— 排查"为什么没查到"时很有用，
+    # 但平时开着会把业务日志淹掉（一次会话收尾能刷上百行）
+    com.mewchat.dao: info
     # Milvus SDK 内部日志较吵，压到 warn
     io.milvus: warn

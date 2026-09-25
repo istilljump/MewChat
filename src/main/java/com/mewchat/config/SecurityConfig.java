@@ -72,15 +72,24 @@ public class SecurityConfig {
     private static final String BEARER_PREFIX = "bearer ";
 
     /**
-     * 免认证路径：仅登录接口。
+     * 免认证路径：登录接口、静态页面与健康检查占位。
      *
-     * <p>这里刻意不再列 {@code /actuator/health}：项目没有引入 actuator 依赖，
+     * <p><b>静态页面（对话前端）必须放行</b>：浏览器第一次打开
+     * {@code http://host:8080/} 时还没有令牌，若页面本身也要认证，
+     * 用户会看到一个 401 JSON 而不是登录页 —— 那就没法登录了。
+     * 放行的是"不含任何数据的骨架"（HTML/CSS/JS），页面里的每个数据请求
+     * （会话列表、历史、发消息）仍然要带令牌、仍然逐个校验归属。
+     *
+     * <p>这里刻意不列 {@code /actuator/health}：项目没有引入 actuator 依赖，
      * 那条路径实际返回 404，留着会让人以为存在健康检查端点
      * （部署方按它做存活探测会一直失败）。真要健康端点时应先补依赖再放行。
      */
     private static final String[] PUBLIC_PATHS = {
             "/api/auth/login",
-            "/favicon.ico"
+            "/favicon.ico",
+            "/",
+            "/index.html",
+            "/assets/**"
     };
 
     private final ObjectMapper objectMapper;

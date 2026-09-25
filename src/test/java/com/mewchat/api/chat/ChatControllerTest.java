@@ -35,9 +35,11 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willAnswer;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -357,6 +359,89 @@ class ChatControllerTest {
 
         String body = awaitSseBody(result);
         assertThat(body).contains("麻烦提供一下订单号").contains("event:done");
+    }
+
+    /* ==================== 会话列表（对话页侧边栏） ==================== */
+
+    /**
+     * 会话列表的归属必须取令牌里的用户ID，且不接受"查谁的会话"这类参数。
+     *
+     * <p>这是列表接口最直接的攻击面：一旦放一个 userId 参数出去，
+     * 一个拼错的参数就能把别人的会话列表列出来。这里显式 verify
+     * 服务收到的是令牌里的 USER_ID。
+     */
+    @Test
+    void sessionsShouldQueryOnlyCurrentUserWithTokenUserId() throws Exception {
+        given(conversationService.listMine(USER_ID, 0)).willReturn(List.of(
+                Conversation.builder()
+                        .sessionId(SESSION_ID)
+                        .userId(USER_ID)
+                        .title("邮费是多少")
+                        .messageCount(2)
+                        .lastMessageTime(LocalDateTime.of(2024, 9, 24, 10, 0, 0))
+                        .build()));
+
+        mockMvc.perform(get("/api/chat/sessions")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data[0].sessionId").value(SESSION_ID))
+                .andExpect(jsonPath("$.data[0].title").value("邮费是多少"))
+                .andExpect(jsonPath("$.data[0].messageCount").value(2))
+                .andExpect(jsonPath("$.data[0].lastMessageTime").value("2024-09-24 10:00:00"));
+
+        verify(conversationService).listMine(USER_ID, 0);
+    }
+
+    /**
+     * 会话列表同样要求认证：它是"我的会话"，未登录时没有任何可返回的内容。
+     */
+    @Test
+    void sessionsWithoutTokenShouldBeRejected() throws Exception {
+        mockMvc.perform(get("/api/chat/sessions"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(20001));
+    }
+
+    /* ==================== 对话前端（静态页面） ==================== */
+
+    /**
+     * <b>对话页必须免认证可访问</b>，否则用户第一次打开页面看到的是 401 JSON，
+     * 连登录表单都拿不到 —— 那就永远登录不了。
+     *
+     * <p>页面里所有数据请求（会话列表、历史、发消息）仍然要令牌，
+     * 放行的只是不含数据的 HTML/CSS/JS 骨架。
+     */
+    @Test
+    void chatFrontendShouldBeServedWithoutAuthentication() throws Exception {
+        // "/" 由欢迎页机制转发到 index.html。MockMvc 不执行这个转发，
+        // 因此只断言状态码 —— 页面内容改在 "/index.html" 上断言（同一个文件）
+        mockMvc.perform(get("/"))
+                .andExpect(status().isOk());
+
+        // 断言用 ASCII 特征串而不是中文：静态资源响应不带 charset 时，
+        // MockMvc 按 ISO-8859-1 解码响应体，中文断言会因编码而假失败
+        mockMvc.perform(get("/index.html"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"login-form\"")));
+
+        mockMvc.perform(get("/assets/app.js"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("/api/chat/send")));
+        mockMvc.perform(get("/assets/app.css"))
+                .andExpect(status().isOk());
+    }
+
+    /**
+     * 静态资源放行不能顺手把数据接口也放开：无令牌访问业务接口仍然必须是 401。
+     *
+     * <p>与上面那条配对存在：将来若有人把放行清单写成 {@code /**} 之类的宽规则，
+     * 这一条会立刻变红。
+     */
+    @Test
+    void staticResourceRelaxationShouldNotOpenDataApis() throws Exception {
+        mockMvc.perform(get("/api/chat/session/{sessionId}/history", SESSION_ID))
+                .andExpect(status().isUnauthorized());
     }
 
     /* ==================== 辅助 ==================== */

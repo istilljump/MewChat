@@ -145,6 +145,33 @@ public interface ConversationService extends IService<Conversation> {
     Page<Conversation> pageConversations(Long userId, Integer status, int pageNo, int pageSize);
 
     /**
+     * 查询某个用户最近的会话（对话页侧边栏"会话记录"用）。
+     *
+     * <p>与 {@link #pageConversations} 的区别：那个方法是运营后台的口子（不校验归属、
+     * 由接口层权限把关），这里是<b>面向用户自己</b>的列表，只看得到自己的会话 ——
+     * 归属由调用方传入的 userId 决定，接口层从令牌里取，不接受请求参数。
+     *
+     * <p>按最近活跃时间倒序；从未说过话的会话（活跃时间为空）排在最后。
+     *
+     * @param userId 当前用户ID
+     * @param limit  条数上限，非法值兜到默认值，且封顶（见实现）
+     * @return 会话列表，可能为空
+     */
+    List<Conversation> listMine(Long userId, int limit);
+
+    /**
+     * 会话标题为空时写入标题（首条用户消息即标题）。
+     *
+     * <p>只写一次：标题跟着会话走，"更聪明"的做法是让模型总结话题，
+     * 但那要多付一次模型调用、且用户看到的标题会随时间突变。
+     * 用首句原话既便宜又稳定，也是建表时注释里写的方案。
+     *
+     * @param sessionId 会话业务ID
+     * @param title     候选标题（会做长度截断）
+     */
+    void updateTitleIfBlank(String sessionId, String title);
+
+    /**
      * 读取挂起的澄清追问。
      *
      * @param sessionId 会话业务ID

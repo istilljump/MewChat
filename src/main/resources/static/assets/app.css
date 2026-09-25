@@ -1,0 +1,330 @@
+/* ============================================================================
+ * 小喵 · 智能客服 —— 对话前端样式
+ *
+ * 风格取向（照着需求给的参考图做）：米黄底 + 3px 纯黑描边 + 硬阴影
+ * （不带模糊的 offset 阴影），即"新粗野主义"那种纸面印刷感。
+ *
+ * 几点说明：
+ * - 刻意不引入任何 CSS 框架：全站就这一个页面，引框架的代价（多一个网络依赖、
+ *   一套要学的类名）大于收益；
+ * - 配色只用四个变量，改主题只需改这里；
+ * - 交互状态（hover/disabled）都写成"位移 + 阴影消失"，与硬阴影风格一致。
+ * ========================================================================= */
+
+:root {
+    --paper: #fbf3e2;          /* 页面底色：米黄纸 */
+    --ink: #1b1b1b;            /* 描边与正文：近黑 */
+    --panel: #fffdf6;          /* 卡片底色：略亮的纸 */
+    --accent: #f2a03d;         /* 主色：橙（顶栏、选中态） */
+    --accent-deep: #e8892a;    /* 主色加深（hover） */
+    --user-bubble: #f4795b;    /* 用户气泡：珊瑚红 */
+    --muted: #6f6656;          /* 次要文字 */
+    --ok: #2f9e44;             /* 在线小绿点 */
+    --danger: #c0392b;
+    --border: 3px solid var(--ink);
+    --shadow: 4px 4px 0 var(--ink);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: Georgia, "Songti SC", "SimSun", "Noto Serif SC", serif;
+    font-size: 16px;
+    line-height: 1.75;
+}
+
+[hidden] { display: none !important; }
+
+/* ==================== 登录层 ==================== */
+
+.login-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--paper);
+}
+
+.login-card {
+    width: min(420px, 92vw);
+    padding: 26px 26px 20px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 8px 8px 0 var(--ink);
+}
+
+.brand-row { display: flex; align-items: center; gap: 12px; }
+
+.brand-logo {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    font-size: 24px;
+    background: var(--panel);
+    border: var(--border);
+}
+
+.brand-title { font-weight: 700; font-size: 20px; letter-spacing: .5px; }
+.brand-sub { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+
+.dot-online {
+    width: 10px;
+    height: 10px;
+    background: var(--ok);
+    border: 2px solid var(--ink);
+    display: inline-block;
+}
+
+.field { display: block; margin-top: 16px; }
+.field span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+
+input, textarea {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--ink);
+    background: #fff;
+    border: var(--border);
+    outline: none;
+}
+
+input:focus, textarea:focus { box-shadow: var(--shadow); }
+
+.btn {
+    font: inherit;
+    padding: 8px 16px;
+    background: var(--panel);
+    color: var(--ink);
+    border: var(--border);
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    transition: transform .06s ease, box-shadow .06s ease;
+}
+
+.btn:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+.btn:active { transform: translate(4px, 4px); box-shadow: none; }
+.btn:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: var(--shadow); }
+
+.btn-primary { width: 100%; margin-top: 18px; background: var(--accent); font-weight: 700; }
+.btn-primary:hover { background: var(--accent-deep); }
+.btn-ghost { box-shadow: 3px 3px 0 var(--ink); }
+
+.hint { font-size: 13px; color: var(--muted); }
+.error-text { color: var(--danger); font-size: 14px; margin: 10px 0 0; }
+
+/* ==================== 主体布局 ==================== */
+
+.app { display: grid; grid-template-columns: 250px 1fr; height: 100%; }
+
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    border-right: var(--border);
+    background: var(--paper);
+    min-width: 0;
+}
+
+.sidebar-title {
+    margin: 14px 12px 10px;
+    padding: 8px 12px;
+    font-weight: 700;
+    background: var(--accent);
+    border: var(--border);
+    box-shadow: 3px 3px 0 var(--ink);
+}
+
+.session-list { flex: 1; overflow-y: auto; padding: 4px 12px 12px; }
+
+.session-item {
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    text-align: left;
+    font: inherit;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 3px 3px 0 var(--ink);
+    cursor: pointer;
+}
+
+.session-item:hover { background: #fff7e6; }
+.session-item.active { background: #ffe6bc; }
+
+.session-no { font-size: 12px; font-weight: 700; color: var(--muted); }
+.session-title {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.session-meta { font-size: 12px; color: var(--muted); }
+
+.sidebar-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-top: var(--border);
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.link-btn {
+    font: inherit;
+    font-size: 13px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* ==================== 主区 ==================== */
+
+.main { display: flex; flex-direction: column; min-width: 0; }
+
+.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 18px;
+    background: var(--accent);
+    border-bottom: var(--border);
+}
+
+.messages { flex: 1; overflow-y: auto; padding: 22px 26px; scroll-behavior: smooth; }
+
+.empty-state { text-align: center; color: var(--muted); margin-top: 12vh; }
+
+/* ---- 消息 ---- */
+
+.msg { display: flex; margin-bottom: 18px; }
+.msg.user { justify-content: flex-end; }
+
+.bubble-user {
+    max-width: 62%;
+    padding: 10px 14px;
+    background: var(--user-bubble);
+    border: var(--border);
+    box-shadow: var(--shadow);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.answer-card {
+    max-width: 78%;
+    min-width: 240px;
+    padding: 14px 16px 12px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: var(--shadow);
+}
+
+.answer-body { white-space: pre-wrap; word-break: break-word; }
+
+/* 引用角标：渲染成参考图里那种 [1] 小方块 */
+.cite-chip {
+    display: inline-block;
+    min-width: 20px;
+    margin: 0 2px;
+    padding: 0 4px;
+    font-size: 12px;
+    line-height: 18px;
+    text-align: center;
+    background: #fff2d8;
+    border: 2px solid var(--ink);
+    vertical-align: 2px;
+    cursor: help;
+}
+
+.progress-line { color: var(--muted); font-size: 13px; }
+.progress-line::after { content: "…"; }
+
+.answer-meta {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 2px dashed #d9cfb8;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.sources { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.sources ol { margin: 4px 0 0 18px; padding: 0; }
+
+.answer-actions { margin-top: 8px; display: flex; gap: 8px; }
+
+.icon-btn {
+    font: inherit;
+    font-size: 14px;
+    padding: 2px 8px;
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    box-shadow: 2px 2px 0 var(--ink);
+    cursor: pointer;
+}
+
+.icon-btn:hover { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--ink); }
+
+.notice-badge {
+    display: inline-block;
+    padding: 0 6px;
+    font-size: 12px;
+    background: #ffe3e3;
+    border: 2px solid var(--danger);
+    color: var(--danger);
+}
+
+/* ==================== 输入区 ==================== */
+
+.composer {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+    padding: 14px 18px;
+    border-top: var(--border);
+    background: var(--paper);
+}
+
+.composer textarea {
+    flex: 1;
+    resize: none;
+    max-height: 140px;
+    line-height: 1.6;
+}
+
+.composer .btn-primary { width: auto; margin: 0; padding: 12px 22px; }
+
+/* ==================== 提示条 ==================== */
+
+.toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    z-index: 30;
+    max-width: 80vw;
+    padding: 8px 16px;
+    background: var(--ink);
+    color: var(--paper);
+    border: var(--border);
+    box-shadow: 4px 4px 0 rgba(0, 0, 0, .35);
+    font-size: 14px;
+}
+
+@media (max-width: 720px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .answer-card, .bubble-user { max-width: 92%; }
+}

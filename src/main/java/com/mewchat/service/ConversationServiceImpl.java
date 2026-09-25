@@ -51,6 +51,15 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
     /** 后台分页的每页条数上限，防止 {@code size=100000} 把整张表读进内存 */
     private static final int MAX_PAGE_SIZE = 200;
 
+    /** "我的会话"列表的默认条数（侧边栏用） */
+    private static final int DEFAULT_MINE_LIMIT = 30;
+
+    /** "我的会话"列表的条数上限 */
+    private static final int MAX_MINE_LIMIT = 100;
+
+    /** 会话标题的长度上限（字符数），见 {@link #truncateTitle} */
+    private static final int TITLE_MAX_LENGTH = 50;
+
     @Override
     public Conversation getBySessionId(String sessionId) {
         if (!StringUtils.hasText(sessionId)) {
@@ -189,6 +198,71 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
                         // 最近活跃的排前面：客服按会话查问题时，最新的一定是最相关的
                         .orderByDesc(Conversation::getLastMessageTime)
                         .orderByDesc(Conversation::getId));
+    }
+
+    @Override
+    public List<Conversation> listMine(Long userId, int limit) {
+        if (userId == null) {
+            // 没登录就没有"我的会话"。返回空列表而不是抛异常：这个方法的调用方
+            // （对话接口）已经由安全链保证了登录，真出现 null 是编程错误，
+            // 但让列表为空比让整个页面报错更符合"查不到"的语义
+            return List.of();
+        }
+        return page(Page.of(1, clampMineLimit(limit)),
+                Wrappers.<Conversation>lambdaQuery()
+                        .eq(Conversation::getUserId, userId)
+                        // 空会话不进列表：前端每次点"新对话"都会先建一条会话，
+                        // 不过滤的话侧边栏会被"建了却没说一句话"的记录刷满
+                        .gt(Conversation::getMessageCount, 0)
+                        // 与会话列表同一个排序口径：最近活跃的排前面，
+                        // 且 NULL 活跃时间（刚建、还没说话）排最后 —— 前端要的正是这个顺序
+                        .orderByDesc(Conversation::getLastMessageTime)
+                        .orderByDesc(Conversation::getId))
+                .getRecords();
+    }
+
+    @Override
+    public void updateTitleIfBlank(String sessionId, String title) {
+        if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(title)) {
+            return;
+        }
+        // 条件更新而不是先查后写：标题只写一次（首条用户消息），
+        // 把它写成 UPDATE 的 WHERE 条件，并发发两条消息时也只有一条能写进去
+        lambdaUpdate()
+                .eq(Conversation::getSessionId, sessionId)
+                .and(wrapper -> wrapper.eq(Conversation::getTitle, "").or().isNull(Conversation::getTitle))
+                .set(Conversation::getTitle, truncateTitle(title))
+                .update();
+    }
+
+    /**
+     * 截断标题到列宽以内（{@code title} 为 VARCHAR(100)）。
+     *
+     * <p>按字符截断而不是按字节：中文一个字占多个字节，按字节截会把最后一个字切碎。
+     * 留 3 个字符的余量给可能的省略号与空白。
+     *
+     * @param title 原始标题（首条用户消息）
+     * @return 截断后的标题
+     */
+    private static String truncateTitle(String title) {
+        String trimmed = title.trim().replaceAll("\\s+", " ");
+        return trimmed.length() <= TITLE_MAX_LENGTH ? trimmed : trimmed.substring(0, TITLE_MAX_LENGTH) + "…";
+    }
+
+    /**
+     * 收敛"我的会话"条数上限。
+     *
+     * <p>侧边栏只展示最近若干条，不需要分页；上限必须存在，
+     * 否则累计了上千个会话的账号每次打开页面都会把全部会话读出来。
+     *
+     * @param limit 请求条数
+     * @return 合法条数
+     */
+    private static int clampMineLimit(int limit) {
+        if (limit <= 0) {
+            return DEFAULT_MINE_LIMIT;
+        }
+        return Math.min(limit, MAX_MINE_LIMIT);
     }
 
     /**

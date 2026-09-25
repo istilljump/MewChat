@@ -4,6 +4,7 @@ import com.mewchat.agent.ChatReply;
 import com.mewchat.agent.supervisor.ChatSupervisor;
 import com.mewchat.api.chat.dto.ChatMessageView;
 import com.mewchat.api.chat.dto.ChatSendRequest;
+import com.mewchat.api.chat.dto.SessionView;
 import com.mewchat.common.exception.BizException;
 import com.mewchat.common.result.Result;
 import com.mewchat.common.result.ResultCode;
@@ -26,6 +27,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -102,6 +104,31 @@ public class ChatController {
         Conversation conversation = conversationService.createForUser(requireUserId(user));
         log.info("新建会话：sessionId={} userId={}", conversation.getSessionId(), conversation.getUserId());
         return Result.success(conversation.getSessionId());
+    }
+
+    /**
+     * 查询当前用户的会话列表（对话页侧边栏用）。
+     *
+     * <p><b>归属来自令牌</b>：请求里没有"查谁的会话"这个参数，能看到的只有自己的 ——
+     * 这是与会话历史的同一个原则（会话ID泄露一次等于对话内容泄露），
+     * 列表接口是对这条原则最直接的攻击面：一旦接受 userId 参数，
+     * 一个拼错的参数就能把别人的会话列表列出来。
+     *
+     * @param user  当前登录用户
+     * @param limit 条数上限，非法值兜到默认值并封顶
+     * @return 会话列表，最近活跃的排前面
+     */
+    @GetMapping("/sessions")
+    public Result<List<SessionView>> sessions(@AuthenticationPrincipal AuthenticatedUser user,
+                                              @RequestParam(required = false, defaultValue = "0") int limit) {
+        List<SessionView> views = conversationService.listMine(requireUserId(user), limit).stream()
+                .map(conversation -> new SessionView(
+                        conversation.getSessionId(),
+                        conversation.getTitle(),
+                        conversation.getMessageCount(),
+                        conversation.getLastMessageTime()))
+                .toList();
+        return Result.success(views);
     }
 
     /**

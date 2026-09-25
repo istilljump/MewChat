@@ -220,6 +220,9 @@ public class ChatMemoryService {
                 .status(1)
                 .build();
         messageService.save(message);
+        // 首条用户消息兼作会话标题（列注释里的既定设计）：会话列表要显示"这段对话是关于什么"，
+        // 没有标题就只能显示一串会话ID。只在标题为空时写入，因此第二条消息起不再改动
+        conversationService.updateTitleIfBlank(sessionId, content);
         conversationService.touchOnNewMessage(sessionId, LocalDateTime.now());
     }
 

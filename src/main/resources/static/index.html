@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>小喵 · 智能客服</title>
+    <link rel="icon" href="data:,"><!-- 不请求 favicon，避免控制台一条 404 -->
+    <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<!-- 登录层：接口全部要求 Bearer 令牌，因此页面第一件事是换令牌。
+     用覆盖层而不是独立登录页：登录成功后不必跳转，直接进入对话。 -->
+<div id="login-layer" class="login-layer">
+    <form id="login-form" class="login-card">
+        <div class="brand-row">
+            <span class="brand-logo">🐱</span>
+            <div>
+                <div class="brand-title">小喵 · 智能客服</div>
+                <div class="brand-sub"><span class="dot-online"></span> 登录后开始咨询</div>
+            </div>
+        </div>
+        <label class="field">
+            <span>账号</span>
+            <input id="login-username" name="username" autocomplete="username" value="alice" required>
+        </label>
+        <label class="field">
+            <span>密码</span>
+            <input id="login-password" name="password" type="password" autocomplete="current-password"
+                   value="123456" required>
+        </label>
+        <button class="btn btn-primary" type="submit">进入咨询</button>
+        <p class="hint">演示账号：alice（客户）/ bob（客服）/ admin（管理员），密码均为 123456</p>
+        <p id="login-error" class="error-text" hidden></p>
+    </form>
+</div>
+
+<div id="app" class="app" hidden>
+    <!-- 侧边栏：会话记录 -->
+    <aside class="sidebar">
+        <div class="sidebar-title">会话记录</div>
+        <div id="session-list" class="session-list"></div>
+        <div class="sidebar-foot">
+            <span id="who" class="who"></span>
+            <button id="logout" class="link-btn" type="button">退出</button>
+        </div>
+    </aside>
+
+    <!-- 主区 -->
+    <main class="main">
+        <header class="topbar">
+            <div class="brand-row">
+                <span class="brand-logo">🐱</span>
+                <div>
+                    <div class="brand-title">小喵 · 智能客服</div>
+                    <div class="brand-sub"><span class="dot-online"></span> ONLINE · 喵喵优选</div>
+                </div>
+            </div>
+            <button id="new-session" class="btn btn-ghost" type="button">＋ 新对话</button>
+        </header>
+
+        <section id="messages" class="messages">
+            <div id="empty-state" class="empty-state">
+                <p>点「＋ 新对话」开始，或从左侧选一段历史会话。</p>
+                <p class="hint">可以问：订单到哪了 / 七天无理由怎么退 / 耳机多少钱 / 邮费是多少</p>
+            </div>
+        </section>
+
+        <footer class="composer">
+            <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <button id="send" class="btn btn-primary" type="button">发送</button>
+        </footer>
+    </main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>
