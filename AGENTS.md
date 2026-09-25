@@ -1447,6 +1447,38 @@ UPDATE 的 WHERE 条件（`UPDATE ... WHERE id=? AND status=0`），后到一方
 阶段 15 记录的那次**未复现偶发失败**，其后共跑了 4 次门控全量（含本阶段这次），
 **均全绿**，仍未复现、仍无归因。
 
+#### 凭证处置：改为专用账号，而不是改 root 口令
+
+口令明文从本文档清掉之后，问题还差最后一半：**被公开过的口令仍在被使用**。
+原计划把本机库口令改掉，但查明两件事后改成了另一个做法：
+
+1. **这台机器上 root 是被共用的**：其它项目、`test/06`~`test/14` 的 其它项目 系列、
+   `其它库` 等约 8 个项目、36 处配置都用 `root`/同一口令连库。
+   改 root 口令会让它们**全部连不上库**，而且报错出现在各自的运行期、很难第一时间归因。
+2. **换成 `123456` 并不解决暴露问题**：它本身就是暴力破解字典的第一梯队，
+   而且已经作为演示账号口令写在公开的 `docs/demo-runbook.md` 里 ——
+   等于"换了一个同样不安全、且同样已知的值"。
+
+最终做法：**给应用建专用账号** `mewchat`（生成 32 位随机口令），
+只授权 `mewchat` 库（`CREATE USER` + `GRANT ALL ON \`mewchat\`.*`，`localhost` 与
+`127.0.0.1` 各一份），root 保持不动、其它项目零影响。口令只落在 `local.env.bat`（已忽略）。
+实测确认：
+
+| 检查 | 结果 |
+| --- | --- |
+| 专用账号连库、查 `mewchat` 表数 | 通过（7 张表） |
+| `CREATE DATABASE IF NOT EXISTS mewchat`（start.bat 的建库路径） | 通过（退出码 0；schema 级授权也覆盖"换机器首次建库"） |
+| 越权建别的库 / 读别的库（另一张表） | **均被拒**（`Access denied` / `SELECT command denied`）——权限确实收在一个库内 |
+| 门控全量测试用该账号 | **`Tests run: 260, Failures: 0, Errors: 0, Skipped: 0`** |
+
+README 与 `docs/demo-runbook.md` 同步：新增"给应用建专用账号"的步骤与
+"为什么值得多这一步"（应用只需一个库的权限，用 root 连库意味着账号泄露时同实例上的
+**其它库**也一起交出去），并把脚本里的 `-u root` 改为 `-u "$MYSQL_USER"`。
+
+> 若确实要用 root 直连：把 `MYSQL_USERNAME` 设回 `root` 即可，
+> 但那 8 个共用该账号的项目需要在改口令时同步更新（36 处配置，含 `target/classes` 副本），
+> 且新口令同样别用 `123456`。
+
 ### 运行前置条件
 
 - **`MEWCHAT_TOKEN_SECRET` 现在是必填项**（阶段 10 变更）：`application.yml` 不再提供默认值，
@@ -1470,10 +1502,11 @@ UPDATE 的 WHERE 条件（`UPDATE ... WHERE id=? AND status=0`），后到一方
   机器上**还有第二套安装**：服务 `MySQL80` 指向 `C:\Program Files\MySQL\MySQL Server 8.0`，
   数据目录在 `C:\ProgramData\MySQL\MySQL Server 8.0\Data`（当前用户无权限访问）。
   两者都配了 3306，只能起一个 —— 本项目用的是 `E:\...` 那一套。
-- **数据库凭证**：本机开发库为 `root` / 密码见下方命令中的占位符
-  （**刻意不写进本文件**：这是会被提交的文档，落一个真实密码等于把凭证提交进仓库）。
-  账号需要建库/建表权限。库名 `mewchat`，字符集 utf8mb4。
-- **建库与执行脚本**：
+- **数据库凭证**：应用**不再用 root 连库** —— 见阶段 16 的处置记录。本机应用账号是
+  `mewchat`（口令见 `local.env.bat`，**刻意不写进本文件**：这是会被提交的文档，
+  落一个真实口令等于把凭证提交进仓库）；该账号只被授权 `mewchat` 库。
+  **建库与授权仍需 root**（一次性管理动作）。库名 `mewchat`，字符集 utf8mb4。
+- **建库与执行脚本**（用 root，属管理动作）：
   ```bash
   MV=/e/mysql/mysql-8.0.34-winx64/bin/mysql.exe
   "$MV" -u root -p"$MYSQL_PWD" --default-character-set=utf8mb4 \
@@ -1487,11 +1520,12 @@ UPDATE 的 WHERE 条件（`UPDATE ... WHERE id=? AND status=0`），后到一方
   **库名由 `--database` 指定**：六个脚本都不含 `USE`（原先 01/02 自带 `USE \`mewchat\``、
   03~06 靠 `--database`，用别的库名时前两个会静默把表建到 `mewchat`，两边都不报错 ——
   阶段 14 克隆验证时踩到）。要换库名，改建库语句、`--database` 与应用连接串三处即可。
-- **跑集成测试**（`mvn` 不在 PATH，用项目内 wrapper；密码必须显式传入，
-  测试里 `mewchat.it.mysql.password` 默认是**空**）：
+- **跑集成测试**（`mvn` 不在 PATH，用项目内 wrapper；账号与密码都必须显式传入，
+  测试里 `mewchat.it.mysql.username` 默认 `root`、密码默认为**空**）：
   ```bash
   export MEWCHAT_TOKEN_SECRET="至少16位的随机串"
-  ./mvnw test -Dmewchat.it.mysql=true -Dmewchat.it.mysql.password="$MYSQL_PWD"
+  ./mvnw test -Dmewchat.it.mysql=true \
+    -Dmewchat.it.mysql.username=mewchat -Dmewchat.it.mysql.password="$MYSQL_PWD"
   ```
   不带这些参数时 34 项需要 MySQL 的测试会跳过（构建依然是绿的）。
 - **Milvus 未部署**：19530 / 9091 均无监听；`mewchat.milvus.enabled` 暂为 `false`。

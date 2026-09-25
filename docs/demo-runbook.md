@@ -16,7 +16,8 @@
 | 变量 | 作用 | 说明 |
 | --- | --- | --- |
 | `MEWCHAT_TOKEN_SECRET` | 令牌签名密钥 | **必填**，不设则应用启动失败（刻意如此）。至少 16 位随机串 |
-| `MYSQL_PASSWORD` | 数据库密码 | 本机开发库账号是 `root`，口令**不写进本文档** —— 见 `local.env.bat`（已被 `.gitignore` 忽略） |
+| `MYSQL_USER` | 数据库账号 | 应用**不用 root** 连库，用只授权 `mewchat` 库的专用账号（本机是 `mewchat`） |
+| `MYSQL_PASSWORD` | 数据库口令 | **不写进本文档** —— 见 `local.env.bat`（已被 `.gitignore` 忽略）。建库与授权仍需 root，属一次性管理动作 |
 | `LLM_API_KEY` | 模型密钥 | 演示用真模型时填；用本地假端点时随便填一个非空值 |
 | `LLM_BASE_URL` | 模型端点 | 真厂商示例：`https://api.deepseek.com/v1` |
 | `LLM_MODEL` | 模型名 | 真厂商示例：`deepseek-chat` |
@@ -24,6 +25,7 @@
 ```bash
 # Git Bash
 export MEWCHAT_TOKEN_SECRET="demo-secret-0123456789abcdef"
+export MYSQL_USER=mewchat
 export MYSQL_PASSWORD="<你本机的库口令，见 local.env.bat>"   # 口令不入仓库
 export LLM_BASE_URL=http://127.0.0.1:18124/v1
 export LLM_API_KEY=local-dev-key
@@ -45,7 +47,7 @@ cd /e/mysql/mysql-8.0.34-winx64 && ./bin/mysqld.exe --console
 
 ```bash
 MV=/e/mysql/mysql-8.0.34-winx64/bin/mysql.exe      # 打印sql时用它
-q()  { "$MV" -h 127.0.0.1 -P 3306 -u root -p"$MYSQL_PASSWORD" --default-character-set=utf8mb4 "$@"; }
+q()  { "$MV" -h 127.0.0.1 -P 3306 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --default-character-set=utf8mb4 "$@"; }
 ```
 
 首次或换机器时建库并按 `sql/01 → sql/05` 顺序执行脚本：
@@ -53,7 +55,7 @@ q()  { "$MV" -h 127.0.0.1 -P 3306 -u root -p"$MYSQL_PASSWORD" --default-characte
 ```bash
 q -e "CREATE DATABASE IF NOT EXISTS mewchat DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
 for f in sql/01_schema.sql sql/02_knowledge_chunk.sql sql/03_pending_clarification.sql          sql/04_question_cluster.sql sql/05_question_length.sql; do
-  "$MV" -h 127.0.0.1 -P 3306 -u root -p"$MYSQL_PASSWORD" --default-character-set=utf8mb4 --database=mewchat < "$f"
+  "$MV" -h 127.0.0.1 -P 3306 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --default-character-set=utf8mb4 --database=mewchat < "$f"
 done
 ```
 
@@ -350,7 +352,7 @@ curl -s -X POST http://127.0.0.1:8080/api/admin/knowledge/documents \
 最后把问题标记为已优化，演示**清单收敛**：
 
 ```bash
-QID=$("$MV" -h 127.0.0.1 -P 3306 -u root -p"$MYSQL_PASSWORD" -N --default-character-set=utf8mb4 mewchat \
+QID=$("$MV" -h 127.0.0.1 -P 3306 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -N --default-character-set=utf8mb4 mewchat \
   -e "SELECT id FROM low_confidence_question WHERE optimized=0 LIMIT 1;")
 curl -s -X POST "http://127.0.0.1:8080/api/admin/analytics/questions/$QID/optimize" \
   -H "Authorization: Bearer $ATOKEN" -H "Content-Type: application/json" \
@@ -416,7 +418,7 @@ curl -s -o /dev/null -w "客服改知识库 -> HTTP %{http_code}\n" \
 
 ```bash
 ./mvnw -B test                                        # 默认测试集应全绿
-./mvnw -B test -Dmewchat.it.mysql=true -Dmewchat.it.mysql.password="$MYSQL_PASSWORD"  # 真库测试应全绿
+./mvnw -B test -Dmewchat.it.mysql=true \n  -Dmewchat.it.mysql.username="$MYSQL_USER" -Dmewchat.it.mysql.password="$MYSQL_PASSWORD"  # 真库测试应全绿
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/api/admin/analytics/overview  # 401 = 应用活着
 ```
 

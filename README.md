@@ -79,7 +79,21 @@ done
 
 # 可选：两个演示账号（alice / admin，密码都是 123456）
 mysql -u root -p --default-character-set=utf8mb4 --database=mewchat < sql/06_demo_seed.sql
+
+# 推荐：给应用建专用账号，只授权本库（这三步要用 root，是一次性的管理动作）
+# 口令自己生成（例如 32 位随机串），别用弱口令、别提交进仓库
+mysql -u root -p -e "
+CREATE USER IF NOT EXISTS 'mewchat'@'localhost' IDENTIFIED BY '<你的口令>';
+CREATE USER IF NOT EXISTS 'mewchat'@'127.0.0.1' IDENTIFIED BY '<你的口令>';
+GRANT ALL PRIVILEGES ON \`mewchat\`.* TO 'mewchat'@'localhost';
+GRANT ALL PRIVILEGES ON \`mewchat\`.* TO 'mewchat'@'127.0.0.1';"
+# 之后启动应用时给 MYSQL_USERNAME=mewchat、MYSQL_PASSWORD=<你的口令>
 ```
+
+> **为什么值得多这一步**：应用只需读写 `mewchat` 一个库，用 root 连库意味着
+> 账号泄露的那天，同一台 MySQL 上的**其它库**也一起交出去（本机就还有别的项目在用这个实例）。
+> 专用账号把影响面收到一个库，也让"库里那些脚本为什么需要 root"变得清楚：
+> 建库与授权是管理动作，应用连库是日常动作，两者本就不该共用一个身份。
 
 > `--default-character-set=utf8mb4` 不要省：脚本是 UTF-8，而 Windows 终端默认可能是 GBK，
 > 不指定会让建表注释变乱码。
@@ -206,7 +220,7 @@ export LLM_MODEL=deepseek-chat
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MEWCHAT_TOKEN_SECRET` | **无（必填）** | 令牌签名密钥，≥16 位；改它会让所有已签发令牌失效 |
-| `MYSQL_USERNAME` / `MYSQL_PASSWORD` | `root` / `root` | 数据库账号 |
+| `MYSQL_USERNAME` / `MYSQL_PASSWORD` | `root` / `root` | 数据库账号。**别让应用用 root 连库**：给它建一个只授权本库的专用账号，见下方"建库与建表"最后一步。密码不要写进仓库（本机用 `local.env.bat`，已被 `.gitignore` 忽略） |
 | `LLM_API_KEY` | 占位值 | 模型密钥，不填则所有意图识别降级、对话走追问 |
 | `LLM_BASE_URL` | `https://api.deepseek.com/v1` | 模型端点 |
 | `LLM_MODEL` | `deepseek-chat` | 模型名 |
