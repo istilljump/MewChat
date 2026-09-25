@@ -403,6 +403,34 @@ class ChatControllerTest {
                 .andExpect(jsonPath("$.code").value(20001));
     }
 
+    /**
+     * <b>参数类型写错不能被报成 500</b>：{@code ?limit=abc} 是调用方的问题，
+     * 若落进兜底处理器就会变成"系统繁忙"，调用方以为该重试、服务端错误率被污染。
+     *
+     * <p>断言里刻意检查消息点出了是哪个参数（而不是回显原值）：报错要能让人改对，
+     * 同时不回显请求串里任意内容。
+     */
+    @Test
+    void invalidQueryParamTypeShouldBeReportedAsParameterError() throws Exception {
+        mockMvc.perform(get("/api/chat/sessions").param("limit", "abc")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(10001))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("limit")));
+    }
+
+    /**
+     * 用错请求方法同样是调用方问题：对着只接受 GET 的接口发 POST 应为 405，
+     * 而不是被兜底成 500"系统繁忙"。
+     */
+    @Test
+    void unsupportedMethodShouldReturn405() throws Exception {
+        mockMvc.perform(post("/api/chat/sessions")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken()))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.code").value(10001));
+    }
+
     /* ==================== 对话前端（静态页面） ==================== */
 
     /**

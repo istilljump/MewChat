@@ -8,10 +8,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -103,6 +106,52 @@ public class GlobalExceptionHandler {
                 .collect(Collectors.joining("; "));
         log.warn("参数绑定失败: {}", detail);
         return Result.error(ResultCode.PARAM_INVALID, detail);
+    }
+
+    /**
+     * 处理"请求参数本身有问题"：类型不匹配、缺少必需参数。
+     *
+     * <p>这几类都是<b>调用方的问题，不是服务端故障</b>：`?limit=abc`（类型错）、
+     * 少传必需参数，若落到兜底处理器就会被报成 500"系统繁忙"，
+     * 调用方会以为该重试，服务端的错误率与告警也被这些本可避免的 500 污染。
+     * 这与阶段 11 修过的"请求体格式错被报成 500"是同一类问题，只是入口从请求体换成了查询参数。
+     *
+     * <p><b>刻意不回显参数的原值</b>：原值来自请求串、内容完全由调用方控制，
+     * 回显进响应与日志既没必要（知道是哪个参数、期望什么类型就够了），
+     * 又给了"把任意文本塞进日志"的机会。
+     *
+     * @param e 参数相关异常
+     * @return 200 + 10001，并点明是哪个参数的问题
+     */
+    @ExceptionHandler({MethodArgumentTypeMismatchException.class,
+            MissingServletRequestParameterException.class})
+    @ResponseStatus(HttpStatus.OK)
+    public Result<Void> handleRequestParameterError(Exception e) {
+        String detail;
+        if (e instanceof MethodArgumentTypeMismatchException mismatch) {
+            detail = "参数 " + mismatch.getName() + " 的取值类型不正确";
+        } else {
+            detail = "缺少必需的参数：" + ((MissingServletRequestParameterException) e).getParameterName();
+        }
+        log.warn("请求参数错误: {}（{}）", detail, e.getClass().getSimpleName());
+        return Result.error(ResultCode.PARAM_INVALID, detail);
+    }
+
+    /**
+     * 处理"请求方法不支持"，例如对着只接受 POST 的接口发 GET。
+     *
+     * <p>同样属于调用方问题：兜底成 500 会让"接口用错了方法"看起来像"服务挂了"。
+     * 这里返回 405 语义（真正的 HTTP 状态码，与 Security 的 401/403 同一处理方式）。
+     *
+     * @param e 方法不支持异常
+     * @return 405 + 统一失败响应
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    @ResponseStatus(HttpStatus.METHOD_NOT_ALLOWED)
+    public Result<Void> handleMethodNotSupported(HttpRequestMethodNotSupportedException e) {
+        log.warn("请求方法不支持: {}（支持：{}）", e.getMethod(), e.getSupportedHttpMethods());
+        return Result.error(ResultCode.PARAM_INVALID,
+                "请求方法 " + e.getMethod() + " 不被支持，该接口支持：" + e.getSupportedHttpMethods());
     }
 
     /**
