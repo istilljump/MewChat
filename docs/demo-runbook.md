@@ -59,20 +59,22 @@ done
 
 > `--default-character-set=utf8mb4` 不能省：脚本是 UTF-8，而 Windows 终端默认可能是 GBK。
 
-### 0.3 两个演示账号
+### 0.3 三个演示账号
 
-`sql/01_schema.sql` **不含种子数据**，演示前先造两个账号（密码都是 `123456`）：
+`sql/01_schema.sql` **不含种子数据**，演示前先造三个账号（密码都是 `123456`）：
 
 ```bash
 q --database=mewchat <<'SQL'
 INSERT INTO user (id, username, password, nickname, user_type, status, deleted) VALUES
  (1727138400000000001,'alice','$2a$10$lzo09L/d0SShiOJsIDv/rOfzqURgoH015W0lfSXhbUGwdAHLuT1XC','演示客户',1,1,0),
+ (1727138400000000005,'bob','$2a$10$lzo09L/d0SShiOJsIDv/rOfzqURgoH015W0lfSXhbUGwdAHLuT1XC','演示客服',2,1,0),
  (1727138400000000009,'admin','$2a$10$lzo09L/d0SShiOJsIDv/rOfzqURgoH015W0lfSXhbUGwdAHLuT1XC','演示管理员',3,1,0)
 ON DUPLICATE KEY UPDATE password=VALUES(password);
 SQL
 ```
 
-`alice` 的 ID 是 `OrderTool.DEMO_OWNER_USER_ID`，**用它登录才能看到候选订单列表**。
+`alice` 的 ID 是 `OrderTool.DEMO_OWNER_USER_ID`，**用它登录才能看到候选订单列表**；
+`bob` 是客服账号，用于步骤 8 演示后台分权。
 
 ### 0.4 选一条模型路线
 
@@ -357,15 +359,29 @@ curl -s -X POST "http://127.0.0.1:8080/api/admin/analytics/questions/$QID/optimi
 curl -s "http://127.0.0.1:8080/api/admin/analytics/optimization-checklist" -H "Authorization: Bearer $ATOKEN"
 ```
 
-### 步骤 8：权限边界
+### 步骤 8：权限边界（后台分权）
 
 ```bash
-curl -s -o /dev/null -w "客户访问后台 -> HTTP %{http_code}\n" \
+# 客户访问后台 → 403：任何后台分组都不对客户开放
+curl -s -o /dev/null -w "客户访问工单列表 -> HTTP %{http_code}\n" \
   "http://127.0.0.1:8080/api/admin/tickets" -H "Authorization: Bearer $TOKEN"
+
+GTOKEN=$(login bob | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+
+# 客服（userType=2）能进一线工作面：工单与对话记录
+curl -s -o /dev/null -w "客服访问工单列表 -> HTTP %{http_code}\n" \
+  "http://127.0.0.1:8080/api/admin/tickets" -H "Authorization: Bearer $GTOKEN"
+curl -s -o /dev/null -w "客服看我的工单 -> HTTP %{http_code}\n" \
+  "http://127.0.0.1:8080/api/admin/tickets/my?status=1" -H "Authorization: Bearer $GTOKEN"
+
+# 但治理面（知识库 / 统计）仍然只有管理员能进
+curl -s -o /dev/null -w "客服改知识库 -> HTTP %{http_code}\n" \
+  "http://127.0.0.1:8080/api/admin/knowledge/documents" -H "Authorization: Bearer $GTOKEN"
 ```
 
-**该看到**：`403`。后台只有管理员（`userType=3`）能进；
-令牌里带了用户类型，因此权限判定零次查库。
+**该看到**：`403` → `200` → `200` → `403`。后台按"工作面"分权：
+一线（工单 + 对话记录，客服接单要看完整对话）与治理面（知识库 + 统计，
+改知识库影响所有回答，只放给管理员）。令牌里带了用户类型，权限判定零次查库。
 
 ---
 

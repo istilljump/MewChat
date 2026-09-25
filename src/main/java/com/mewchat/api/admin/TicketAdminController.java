@@ -3,10 +3,12 @@ package com.mewchat.api.admin;
 import com.mewchat.api.admin.dto.PageView;
 import com.mewchat.api.admin.dto.TicketView;
 import com.mewchat.common.result.Result;
+import com.mewchat.common.security.AuthenticatedUser;
 import com.mewchat.dao.mysql.entity.Ticket;
 import com.mewchat.service.TicketService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -53,6 +55,46 @@ public class TicketAdminController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         return Result.success(PageView.of(ticketService.pageTickets(status, page, size), this::toView));
+    }
+
+    /**
+     * 当前登录人名下的工单（客服工作台的"我的工单"视图）。
+     *
+     * <p><b>处理人来自令牌而不是请求参数</b>：工作台列表是"我的"队列，
+     * 把 handlerId 放开成参数等于允许任何能进工作台的账号冒别人的身份翻看队列。
+     * 典型用法是 {@code status=1}（处理中）看自己手头未结的单。
+     *
+     * @param user   当前登录的客服/管理员（来自令牌）
+     * @param status 状态过滤，可为空
+     * @param page   页码
+     * @param size   每页条数
+     * @return 分页结果
+     */
+    @GetMapping("/my")
+    public Result<PageView<TicketView>> myTickets(
+            @AuthenticationPrincipal AuthenticatedUser user,
+            @RequestParam(required = false) Integer status,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return Result.success(
+                PageView.of(ticketService.pageMyTickets(user.userId(), status, page, size), this::toView));
+    }
+
+    /**
+     * 接单：把一张待处理工单认领给当前登录人。
+     *
+     * <p>与"指派"互补：指派是管理员的安排动作（处理人来自参数），
+     * 接单是客服的自助动作（处理人就是令牌里的自己）。只有待处理工单能接，
+     * 已被同事接走的单不会、也不该被"抢"。
+     *
+     * @param ticketId 工单ID
+     * @param user     当前登录的客服/管理员（来自令牌）
+     * @return 更新后的工单
+     */
+    @PostMapping("/{ticketId}/claim")
+    public Result<TicketView> claim(@PathVariable Long ticketId,
+                                    @AuthenticationPrincipal AuthenticatedUser user) {
+        return Result.success(toView(ticketService.claim(ticketId, user.userId())));
     }
 
     /**

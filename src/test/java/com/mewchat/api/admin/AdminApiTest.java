@@ -38,6 +38,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -73,6 +74,9 @@ class AdminApiTest {
     private static final long ADMIN_ID = 1727138400000000001L;
 
     private static final long CUSTOMER_ID = 1727138400000000002L;
+
+    /** 客服账号ID：与工单/接单用例里的处理人保持一致 */
+    private static final long AGENT_ID = 1727138400000000003L;
 
     /** 与 {@link #document()} 的主键保持一致 */
     private static final long DOC_ID = 7L;
@@ -137,6 +141,7 @@ class AdminApiTest {
         List<String> adminPaths = List.of(
                 "/api/admin/knowledge/documents",
                 "/api/admin/tickets",
+                "/api/admin/tickets/my",
                 "/api/admin/conversations",
                 "/api/admin/analytics/overview",
                 "/api/admin/analytics/optimization-checklist");
@@ -147,28 +152,107 @@ class AdminApiTest {
                     .andExpect(jsonPath("$.code").value(20002));
         }
 
-        // 写接口同样要挡：新加的"标记已优化"是 POST，不在这份 GET 清单里，
-        // 漏掉它就会出现"后台写操作比读操作更容易访问"的荒唐情况
+        // 写接口同样要挡：写操作不在这份 GET 清单里，漏掉它就会出现
+        // "后台写操作比读操作更容易访问"的荒唐情况
         mockMvc.perform(post("/api/admin/analytics/questions/1/optimize")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + customerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"knowledgeDocId\":1}"))
                 .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/admin/tickets/{id}/claim", 1L)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
     }
 
     /**
-     * 客服（userType=2）同样不可访问后台：当前后台只对管理员开放。
+     * <b>客服能进一线工作面（工单 + 对话记录），但进不了治理面（知识库 + 统计）</b>。
      *
-     * <p>这条断言记录的是<b>当前的口径</b>：客服要处理工单时，
-     * 需要另行设计"客服能看哪些工单"的权限模型，而不是把后台整体放开。
+     * <p>这是后台分权的口径：客服接单必须能看到用户的完整对话，否则拿着一行工单
+     * 描述无法还原上下文；而改知识库会影响此后所有回答、统计是运营决策，
+     * 这两个权限面不该给一线。逐路径断言，将来调整分组归属时哪条变了这里就红。
      */
     @Test
-    void agentShouldAlsoBeForbiddenForNow() throws Exception {
-        String agentToken = token(AuthenticatedUser.TYPE_AGENT, CUSTOMER_ID);
+    void agentShouldAccessWorkbenchButNotGovernance() throws Exception {
+        String agentToken = token(AuthenticatedUser.TYPE_AGENT, AGENT_ID);
 
-        mockMvc.perform(get("/api/admin/tickets")
+        // 工作面放行的判定只看 HTTP 状态码，业务返回用空结果打桩即可 ——
+        // 不打桩的话 Mock 返回 null，控制器里 PageView.of(null,…) 会 NPE 成 500，
+        // 把"权限放行了"误报成"服务器错了"
+        given(ticketService.pageTickets(isNull(), anyInt(), anyInt())).willReturn(emptyPage());
+        given(ticketService.pageMyTickets(any(), any(), anyInt(), anyInt())).willReturn(emptyPage());
+        given(ticketService.claim(anyLong(), anyLong())).willReturn(ticket());
+
+        // 一线工作面：放行（能调通即可，业务正确性由各自的用例覆盖）
+        for (String path : List.of("/api/admin/tickets", "/api/admin/tickets/my",
+                "/api/admin/conversations/" + SESSION_ID + "/messages")) {
+            mockMvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + agentToken))
+                    .andExpect(status().isOk());
+        }
+        mockMvc.perform(post("/api/admin/tickets/{id}/claim", 1L)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + agentToken))
+                .andExpect(status().isOk());
+
+        // 治理面：仍然只对管理员开放，读写都拦
+        for (String path : List.of("/api/admin/knowledge/documents",
+                "/api/admin/analytics/overview",
+                "/api/admin/analytics/optimization-checklist")) {
+            mockMvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + agentToken))
+                    .andExpect(status().isForbidden());
+        }
+        mockMvc.perform(post("/api/admin/knowledge/documents")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + agentToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"新规则\",\"content\":\"正文\"}"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/admin/analytics/clustering/recluster")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + agentToken))
                 .andExpect(status().isForbidden());
+    }
+
+    /**
+     * 客服的"我的工单"视图：<b>处理人必须取令牌里的ID</b>，而不是请求参数。
+     *
+     * <p>放成请求参数的话，任何能进工作台的账号都能冒别人的身份翻看队列 ——
+     * 权限校验挡得住"角色不对"，挡不住"角色对但人不对"。这里显式 verify
+     * 服务收到的是令牌里的 AGENT_ID。
+     */
+    @Test
+    void agentCanListOwnTicketsWithHandlerFromToken() throws Exception {
+        Ticket mine = ticket();
+        mine.setHandlerId(AGENT_ID);
+        mine.setStatus(1);
+        given(ticketService.pageMyTickets(eq(AGENT_ID), isNull(), eq(1), eq(20)))
+                .willReturn(pageOf(mine));
+
+        mockMvc.perform(get("/api/admin/tickets/my")
+                        .header(HttpHeaders.AUTHORIZATION,
+                                "Bearer " + token(AuthenticatedUser.TYPE_AGENT, AGENT_ID)))
+                .andExpect(status().isOk())
+                // 雪花ID被全局配置序列化成字符串（防前端丢精度），按字符串断言
+                .andExpect(jsonPath("$.data.records[0].handlerId").value(String.valueOf(AGENT_ID)))
+                .andExpect(jsonPath("$.data.records[0].statusLabel").value("处理中"));
+
+        verify(ticketService).pageMyTickets(eq(AGENT_ID), isNull(), eq(1), eq(20));
+    }
+
+    /**
+     * 客服接单：<b>接单人同样来自令牌</b>，请求里根本没有处理人参数可填。
+     */
+    @Test
+    void agentCanClaimTicketAsSelf() throws Exception {
+        Ticket claimed = ticket();
+        claimed.setHandlerId(AGENT_ID);
+        claimed.setStatus(1);
+        given(ticketService.claim(1L, AGENT_ID)).willReturn(claimed);
+
+        mockMvc.perform(post("/api/admin/tickets/{id}/claim", 1L)
+                        .header(HttpHeaders.AUTHORIZATION,
+                                "Bearer " + token(AuthenticatedUser.TYPE_AGENT, AGENT_ID)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.handlerId").value(String.valueOf(AGENT_ID)))
+                .andExpect(jsonPath("$.data.statusLabel").value("处理中"));
+
+        verify(ticketService).claim(1L, AGENT_ID);
     }
 
     /* ==================== 工单处理 ==================== */
@@ -429,6 +513,19 @@ class AdminApiTest {
         Page<T> page = Page.of(1, 20);
         page.setRecords(List.of(record));
         page.setTotal(1);
+        return page;
+    }
+
+    /**
+     * 构造空分页结果（权限用例只需断言"能调通"，不需要数据）。
+     *
+     * @param <T> 记录类型
+     * @return 空的分页结果
+     */
+    private static <T> Page<T> emptyPage() {
+        Page<T> page = Page.of(1, 20);
+        page.setRecords(List.of());
+        page.setTotal(0);
         return page;
     }
 

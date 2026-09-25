@@ -114,9 +114,24 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(registry -> registry
                         .requestMatchers(PUBLIC_PATHS).permitAll()
-                        // 运营后台只对管理员开放。这些接口能读任意用户的对话记录、
-                        // 能改知识库、能处理工单，权限面比对话接口大得多，
-                        // 因此单独收紧（hasRole 会自动补 ROLE_ 前缀）
+                        // ===== 运营后台按"工作面"分权（hasRole 会自动补 ROLE_ 前缀）=====
+                        //
+                        // 一线工作面：工单处理与对话记录。客服接单后必须能看到用户的完整对话，
+                        // 否则拿着"用户问题：赠品什么时候发货；置信度 0.00"这一行工单描述，
+                        // 根本无法还原上下文 —— 放不开对话记录的工作台是残的。
+                        // 这两个分组的读接口能看任意用户的对话，属于高权限面，
+                        // 因此仍然只认角色、不落任何客户令牌
+                        .requestMatchers("/api/admin/tickets/**", "/api/admin/conversations/**")
+                                .hasAnyRole("AGENT", "ADMIN")
+                        // 治理面：知识库与数据统计。改知识库会影响此后<b>所有</b>回答，
+                        // 统计与飞轮收口是运营决策 —— 一线不该有这个权限面
+                        // （客服能改知识库的世界里，一次误操作的代价是全量回答质量）。
+                        // 这两个分组也涵盖后台的全部写操作，写操作只放给管理员
+                        .requestMatchers("/api/admin/knowledge/**", "/api/admin/analytics/**")
+                                .hasRole("ADMIN")
+                        // 后台兜底规则：以后新增的分组默认只对管理员开放，
+                        // 要放开给客服必须像上面那样显式声明 —— 宁可"新接口客服调不通"
+                        // 被及时发现，也不要"新接口悄悄对一线敞开"
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         // 其余一律要求认证：新增接口默认是受保护的，
                         // 忘记配置的表现是"新接口调不通"，而不是"新接口裸奔"

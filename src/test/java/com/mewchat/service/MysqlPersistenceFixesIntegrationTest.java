@@ -1,5 +1,6 @@
 package com.mewchat.service;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.mewchat.agent.ChatContext;
 import com.mewchat.agent.ChatState;
 import com.mewchat.agent.memory.ChatMemoryService;
@@ -253,6 +254,71 @@ class MysqlPersistenceFixesIntegrationTest {
         Ticket assigned = ticketService.assign(ticketId, agent.getId());
         assertThat(assigned.getHandlerId()).isEqualTo(agent.getId());
         assertThat(assigned.getStatus()).isEqualTo(1);
+    }
+
+    /**
+     * 接单：待处理工单认领成功；已被同事接走或已结束的工单必须被拒。
+     *
+     * <p>"只有待处理能接"是写进 UPDATE 条件的（不是先查后写），因此并发接单时
+     * 恰好一个成功 —— 这条用例在单线程下验证的是同一条件的判定面
+     * （非待处理状态一律 0 行更新、如实报错）。
+     */
+    @Test
+    void claimShouldTakePendingTicketAndRejectTakenOnes() {
+        String sessionId = newSessionId();
+        Long ticketId = ticketService.createFallbackTicket(
+                sessionId, 1L, "需要人工的问题", BigDecimal.ZERO);
+        User agentA = insertUser(AuthenticatedUser.TYPE_AGENT);
+        User agentB = insertUser(AuthenticatedUser.TYPE_AGENT);
+
+        Ticket claimed = ticketService.claim(ticketId, agentA.getId());
+        assertThat(claimed.getHandlerId()).isEqualTo(agentA.getId());
+        assertThat(claimed.getStatus()).as("接单后应进入处理中").isEqualTo(1);
+
+        assertThatThrownBy(() -> ticketService.claim(ticketId, agentB.getId()))
+                .as("已被同事接走的工单不能被抢")
+                .hasMessageContaining("只有待处理");
+
+        ticketService.resolve(ticketId);
+        assertThatThrownBy(() -> ticketService.claim(ticketId, agentB.getId()))
+                .as("已结束的工单同样不能接")
+                .hasMessageContaining("只有待处理");
+    }
+
+    /**
+     * "我的工单"必须真的按处理人过滤：我的单在我的列表里，别人的不在。
+     *
+     * <p>过滤失效（比如条件没拼进 SQL）不报任何错，只是把所有人的队列
+     * 显示给每一个人 —— 这正是 {@code @MockitoBean} 的 Mapper 验证不了的。
+     * 两个客服都是本轮新建的雪花ID，库里不可能有他们的存量工单，
+     * 因此"agentB 的列表为空"就只能是过滤在生效。
+     */
+    @Test
+    void myTicketsShouldOnlyContainOnesAssignedToMe() {
+        String sessionId = newSessionId();
+        Long ticketId = ticketService.createFallbackTicket(
+                sessionId, 1L, "需要人工的问题", BigDecimal.ZERO);
+        User agentA = insertUser(AuthenticatedUser.TYPE_AGENT);
+        User agentB = insertUser(AuthenticatedUser.TYPE_AGENT);
+        ticketService.claim(ticketId, agentA.getId());
+
+        Page<Ticket> mine = ticketService.pageMyTickets(agentA.getId(), null, 1, 20);
+        assertThat(mine.getRecords())
+                .as("接过的单应出现在自己的列表里")
+                .anySatisfy(t -> assertThat(t.getId()).isEqualTo(ticketId));
+
+        Page<Ticket> theirs = ticketService.pageMyTickets(agentB.getId(), null, 1, 20);
+        assertThat(theirs.getRecords())
+                .as("别人的单绝不能出现在我的列表里")
+                .noneSatisfy(t -> assertThat(t.getId()).isEqualTo(ticketId));
+        assertThat(theirs.getRecords())
+                .as("agentB 是本轮新建的账号，没有任何人给他派过单，列表应为空")
+                .isEmpty();
+
+        Page<Ticket> myOpen = ticketService.pageMyTickets(agentA.getId(), 1, 1, 20);
+        assertThat(myOpen.getRecords())
+                .as("带状态过滤时：接单后的工单在'处理中'列表里")
+                .anySatisfy(t -> assertThat(t.getId()).isEqualTo(ticketId));
     }
 
     /**

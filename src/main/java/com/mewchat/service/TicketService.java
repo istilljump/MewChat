@@ -180,6 +180,76 @@ public class TicketService extends ServiceImpl<TicketMapper, Ticket> {
     }
 
     /**
+     * 分页查询某个处理人名下的工单（客服工作台的"我的工单"视图）。
+     *
+     * <p><b>handlerId 必须来自令牌，而不是请求参数</b>：这是接口层的责任
+     * （控制器从认证主体取 userId 传入）。如果放成请求参数，任何能进工作台的账号
+     * 都能以别人的身份翻看工作队列 —— 权限校验挡得住"角色不对"，
+     * 挡不住"角色对但人不对"。
+     *
+     * @param handlerId 处理人ID（当前登录的客服/管理员）
+     * @param status    状态过滤，为 null 表示不筛选（工作台常用"处理中"）
+     * @param pageNo    页码，从 1 开始
+     * @param pageSize  每页条数
+     * @return 分页结果，按创建时间倒序
+     */
+    public Page<Ticket> pageMyTickets(Long handlerId, Integer status, int pageNo, int pageSize) {
+        return page(Page.of(Math.max(1, pageNo), clampPageSize(pageSize)),
+                Wrappers.<Ticket>lambdaQuery()
+                        .eq(handlerId != null, Ticket::getHandlerId, handlerId)
+                        .eq(status != null, Ticket::getStatus, status)
+                        .orderByDesc(Ticket::getCreateTime));
+    }
+
+    /**
+     * 接单：把一张<b>待处理</b>的工单认领给当前登录的客服/管理员。
+     *
+     * <p>与 {@link #assign} 的区别只有一条：<b>只允许从待处理队列拿走</b>。
+     * 已被同事接走（处理中）的工单不能再被接单 —— 两个客服同时点"接单"时，
+     * 后写的会悄悄覆盖先写的，被覆盖方毫不知情地继续处理一张已不属于他的单；
+     * 真要调整处理人，应由管理员走指派（assign 允许处理中的工单）。
+     *
+     * <p><b>并发接单用条件更新闭环，而不是先查后写</b>：接单是工作台上最典型的
+     * 竞争操作（多名客服同时盯着待处理队列）。先查后写会让两个并发接单都成功、
+     * 后写覆盖先写；这里把"待处理"写进 UPDATE 的条件里，后到的一方更新 0 行，
+     * 重新读一次状态后如实报错。处理人合法性的校验复用 {@link #requireAssignableHandler}
+     * （规则只有一份），但写入不委托给 {@link #assign} —— 两者的写入语义本来就不同
+     * （assign 是管理员安排、允许覆盖处理中工单的处理人）。
+     *
+     * @param ticketId  工单ID
+     * @param handlerId 接单人ID（当前登录用户）
+     * @return 更新后的工单
+     * @throws BizException 工单不存在、不是待处理状态，或接单人身份不合法时抛出
+     */
+    public Ticket claim(Long ticketId, Long handlerId) {
+        if (handlerId == null) {
+            throw new BizException(ResultCode.PARAM_INVALID, "接单人不能为空");
+        }
+        requireAssignableHandler(handlerId);
+        requireTicket(ticketId);
+
+        boolean taken = lambdaUpdate()
+                .eq(Ticket::getId, ticketId)
+                // "只有待处理能被接走"是并发安全的判定条件，不是前置检查：
+                // 两个客服同时接同一张单时，条件更新保证恰好一个成功
+                .eq(Ticket::getStatus, STATUS_PENDING)
+                .set(Ticket::getHandlerId, handlerId)
+                .set(Ticket::getStatus, STATUS_PROCESSING)
+                .update();
+        if (!taken) {
+            // 更新 0 行说明读取与更新之间状态变了（最常见：刚被同事接走）。
+            // 状态只会单向流转（待处理→处理中→已解决/关闭），重读不可能是待处理，
+            // 因此统一报"不能接单"；requireTicket 顺带兜住"同时被删除"的极端情况
+            requireTicket(ticketId);
+            throw new BizException(ResultCode.PARAM_INVALID,
+                    "只有待处理的工单才能接单；已被接走的工单如需改派，请由管理员指派");
+        }
+
+        log.info("工单已接单：ticketId={} handlerId={}", ticketId, handlerId);
+        return getById(ticketId);
+    }
+
+    /**
      * 指派工单：登记处理人并把状态推进到"处理中"。
      *
      * <p>不允许指派已解决/已关闭的工单：那类工单的责任已经落定，
