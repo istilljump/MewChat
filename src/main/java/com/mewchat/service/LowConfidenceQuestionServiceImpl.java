@@ -30,11 +30,17 @@ public class LowConfidenceQuestionServiceImpl
 
     private static final Logger log = LoggerFactory.getLogger(LowConfidenceQuestionServiceImpl.class);
 
-    /** 优化状态：待优化 */
-    private static final int OPTIMIZED_PENDING = 0;
+    /**
+     * 优化状态：待优化。
+     *
+     * <p>公开出去是为了让统计装配器（{@code AdminStatsAssembler}）统计
+     * 待优化条数时引用同一份定义：飞轮的核心指标就是"待优化清单还剩多少"，
+     * 口径分叉会让运营看着一个陈旧数字做决策。
+     */
+    public static final int OPTIMIZED_PENDING = 0;
 
     /** 优化状态：已优化（补完知识后由运营手动标记） */
-    private static final int OPTIMIZED_DONE = 1;
+    public static final int OPTIMIZED_DONE = 1;
 
     /**
      * 问题原文入库前的截断长度，与 {@code low_confidence_question.question} 的列宽一致。

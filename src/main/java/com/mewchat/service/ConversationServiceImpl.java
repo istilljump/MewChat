@@ -30,11 +30,20 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
 
     private static final Logger log = LoggerFactory.getLogger(ConversationServiceImpl.class);
 
-    /** 会话状态：进行中 */
-    private static final int STATUS_ACTIVE = 1;
+    /**
+     * 会话状态：进行中。
+     *
+     * <p>public 不是给本类用的：统计装配器（{@code AdminStatsAssembler}）按状态分组计数，
+     * 常量定义在两处迟早出现"服务层改了取值、仪表盘还按旧口径统计"的静默分叉 ——
+     * 统计这类出错不报错的场景，只能靠口径单源来防。
+     */
+    public static final int STATUS_ACTIVE = 1;
 
-    /** 会话状态：已结束 */
-    private static final int STATUS_CLOSED = 2;
+    /** 会话状态：已结束，语义与取值见 {@link #STATUS_ACTIVE} 的说明 */
+    public static final int STATUS_CLOSED = 2;
+
+    /** 会话状态：已转人工（兜底建单后标记），语义与取值见 {@link #STATUS_ACTIVE} 的说明 */
+    public static final int STATUS_HANDOFF = 3;
 
     /** 后台分页的默认每页条数 */
     private static final int DEFAULT_PAGE_SIZE = 20;

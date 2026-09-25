@@ -54,18 +54,26 @@ com.mewchat
 ├── agent        // Agent 编排核心
 │   ├── ChatState / IntentType / ChatContext / ChatReply / ChatNode / HistoryTurn
 │   ├── supervisor/      // ChatSupervisor、IntentRecognizer
-│   │   └── node/        // 7 个编排节点（ContextLoad/IntentRecognize/Route/
-│   │                    //   ConfidenceCheck/Clarify/Reply/Fallback）
+│   │   └── node/        // 10 个编排节点（ContextLoad/GuardCheck/ResumeCheck/
+│   │                    //   IntentRecognize/Route/ConfidenceCheck/Clarify/
+│   │                    //   Reply/Fallback/Reject）
 │   ├── specialist/      // RagSpecialist、ToolSpecialist
 │   └── memory/          // ChatMemoryService
 ├── rag          // RAG 检索服务
-│   └── retrieval/   // KnowledgeRetriever（接口）、KnowledgeChunk
+│   ├── retrieval/   // KnowledgeRetriever（接口）、VectorRetriever、Bm25Retriever、
+│   │                //   RrfFusion、RetrievalConfidenceCalculator、RetrievedChunk
+│   ├── rerank/      // Reranker（接口）、HeuristicReranker
+│   └── document/    // DocumentSplitter、DocumentIngestService
 ├── tool         // 业务工具集
 │   ├── ToolInvoker（接口）、ToolResult、BusinessTool（工具契约）、BusinessToolInvoker（注册表）
-│   └── order/ logistics/ refund/   // 各业务工具：实现 BusinessTool + @Tool 注解
-├── service      // 业务服务层（ConversationService、MessageService、
-│                //   LowConfidenceQuestionService 及其 Impl）
+│   └── order/ logistics/ refund/ product/   // 各业务工具：实现 BusinessTool + @Tool 注解
+├── service      // 业务服务层（ConversationService、MessageService、AuthService、
+│                //   TicketService、KnowledgeDocumentService / KnowledgeChunkService、
+│                //   LowConfidenceQuestionService、QuestionClusteringService 及其 Impl）
 ├── dao          // 数据访问层（mysql、milvus）
+│                //   mysql/entity 下含全部实体：Conversation、Message、User、Ticket、
+│                //   KnowledgeDocument、KnowledgeChunk、LowConfidenceQuestion，
+│                //   以及 JSON 值对象 PendingClarification、MessageRefDoc
 ├── config       // 配置类 + @ConfigurationProperties
 └── job          // 定时任务
 ```
@@ -1363,6 +1371,81 @@ UPDATE 的 WHERE 条件（`UPDATE ... WHERE id=? AND status=0`），后到一方
 对话记录放开后客服能读**任意用户**的会话（含未产生工单的）——
 "按工单关联收紧到只读涉事会话"是更细的权限模型，等有真实合规要求再做；
 `claim` 的条件更新保证单实例与多实例下都不会抢单，但指派（assign）仍是后写覆盖先写。
+
+### 阶段 16 全量复查与验收修复（2026-09-25）
+
+复查方式三条并行：全量测试（默认 + 门控）、**一个只读审查代理通读全部
+`src/main/java`（110+ 文件）+ 配置 + SQL**、以及**真容器端到端冒烟**。
+结果：审查代理报 0 条 P0/P1、1 条 P2、5 条 P3；而**真容器冒烟抓到一个它没发现的 P1**。
+
+#### 真容器抓到的 P1：统计总览在空库上直接 500（已修）
+
+`GET /api/admin/analytics/overview` 在问题池为空时抛
+`NullPointerException: "aggregate" is null` → 500。
+
+成因：不带 `GROUP BY` 的 `SUM/AVG` 在空表上返回**一行全 NULL**，
+而 MyBatis 把这种行映射成 **`null` 元素**（不是"空列表"）。
+`AdminStatsAssembler.firstRow` 的 Javadoc 写着"一行全 null 或没有行，两种都要接住"，
+实现却只判了 `rows.isEmpty()`，于是 `rows.get(0)` 返回 null、随后 `.get(...)` 炸。
+`dailyMessages()` 遍历聚合行时对同一个坑也没有防守。
+
+**这一条恰好命中"全新部署第一次打开后台"这个最该能用的场景**，
+而此前所有测试都发现不了：`AdminApiTest` 用 `@MockitoBean` 把整个装配器替换掉了，
+真库集成测试只覆盖了清单与落库、没覆盖总览聚合。
+
+修法：
+- `firstRow` 在元素为 `null` 时返回空表（并把"两种返回形态"写进注释，附上这次的报错形态）；
+- `dailyMessages` 跳过 `null` 行 —— 该查询带 `GROUP BY`，实际很难触发，
+  但把"聚合行可能为 null"当作本类的**前置事实统一处理**，好过在每个遍历点各假设一次；
+- 新增 `AdminStatsAssemblerTest`（3 项，默认执行、纯 Mockito、不连库）：
+  替身刻意返回**驱动在空表上的真实形态** `Arrays.asList((Map) null)`，
+  而不是更好处理的空列表 —— 用后者等于把缺陷留在原地。
+  同时钉住"有数据时聚合值真的被用上"与"清单为空时返回空清单而非 null"。
+
+#### 审查代理发现并已修的问题
+
+| 级别 | 问题 | 修法 |
+| --- | --- | --- |
+| P2 | 统计口径**魔数复刻**：会话 `1/2/3`、工单 `0~3`、`optimized 0/1`、`embedStatus 3`、`role="assistant"` 在 api 层裸写，与 service 层常量各写一份，改了服务层就会静默按旧口径统计 | 常量化并引用定义处（`ConversationServiceImpl` / `TicketService` / `LowConfidenceQuestionServiceImpl` / `DocumentIngestService` / `ChatConstants`），并补上**此前根本没有常量**的 `STATUS_HANDOFF = 3`（已转人工） |
+| P3 | `ReplyNode` 同一参数两段互相矛盾的 Javadoc（"两倍再加 30 秒" vs 代码的三倍） | 数值只在 `streamWaitTimeout()` 一处说明，另一处改为指向它 |
+| P3 | 免认证清单里的 `/actuator/health` 是死配置（pom 无 actuator，实际 404），会让部署方以为有存活探测端点 | 删掉该条目并写明"真要有得先补依赖" |
+| P3 | `application.yml` 注释声称 api-key"留空会导致启动失败"，实际默认占位值让非空校验永远通过，带假 key 也能正常启动 | 注释改为如实描述（占位值是有意保留：让无凭证环境能启动并走降级路径）；`AiModelConfig` 识别占位值并在启动日志打 WARN，避免把"应用起来了"误读成"模型接好了" |
+| P3 | `ChatConstants.HEADER_SESSION_ID` 是死代码（全仓无引用，续接实际靠请求体的 sessionId），会误导前端对接者 | 删除 |
+| P3 | AGENTS.md **自身口径分叉**（§三写"7 个编排节点"、`KnowledgeChunk` 位置写错、service/dao 清单过时） | 按实际修订（10 个节点、实体在 `dao/mysql/entity`、补齐服务与实体清单） |
+| P2 | **`docs/demo-runbook.md` 明文写着本机开发库口令**（6 处），而仓库是公开的 —— 上传等于发布一个凭证 | 改为统一从 `MYSQL_PASSWORD` 环境变量读取，口令只落在被忽略的 `local.env.bat` 里。⚠️ **该口令已随早前提交进入公开仓库历史**，清理工作树不能撤回历史：建议改掉本机库口令（口令见 local.env.bat 这类弱口令尤其），若不改则视为已公开 |
+
+#### 一处**未修**（如实记录，不是遗漏）
+
+`AdminStatsAssembler` 的三处聚合（消息质量均值、每日消息量、命中次数合计）仍把
+`AVG(...)`/`DATE(...)` 写在 Wrapper 的 `.select()` 里，与 §四.3"手写 SQL 一律放 XML"
+不完全一致。不搬的理由：它们只是单表聚合、参数由 Wrapper 参数化，而这段 SQL
+**没有任何真库测试**（搬迁要同时动 mapper 与 service 接口），
+"改完只有冒烟验证"的风险大于"可 grep、可复用"的收益。
+若后续要给统计补真库测试或做预聚合，应连同这段 SQL 一起搬进 XML。
+
+#### 验收结果
+
+| 项 | 结果 |
+| --- | --- |
+| `./mvnw clean package`（默认） | **`Tests run: 260, Failures: 0, Errors: 0, Skipped: 41`** + BUILD SUCCESS |
+| `./mvnw test -Dmewchat.it.mysql=true` | **`Tests run: 260, Failures: 0, Errors: 0, Skipped: 0`** |
+| 真容器冒烟（`java -jar` + 真库 + 本地假模型） | 分权矩阵 **8/8 符合预期**：客户→工单 `403`、客服→工单/我的工单/对话记录 `200`、客服→知识库/统计 `403`、管理员→统计 `200`、无令牌 `401` |
+| 兜底闭环 | `你们支持开发票吗` → 轨迹 `CONTEXT_LOAD→GUARD_CHECK→RESUME_CHECK→INTENT_RECOGNIZE→ROUTE→RAG_RETRIEVE→CONFIDENCE_CHECK→FALLBACK→END`，自动建单 1 张 |
+| 工作台闭环 | 客服接单 `200/处理中`、**重复接单被如实拒绝**（"只有待处理的工单才能接单…"）、我的工单含该单、结单 `已解决` |
+| 统计总览 | 由修复前的 500 变为 **200**，且数字与刚才的操作一致（工单 total 1 / resolved 1、飞轮 pending 1） |
+| 占位密钥告警 | 不设 `LLM_API_KEY` 启动时打出 WARN，点明配置项与后果 |
+
+顺带记两个操作坑（都在这轮踩到）：
+- **应用还在运行时 `mvn clean` 会失败**（Windows 锁住 jar，报错出现在 clean 阶段、
+  看起来像"构建坏了"）。先停应用再构建 —— 阶段 12 记过一次，这次又踩了。
+- **Git Bash 里带中文的 `curl -d` 会按 GBK 发出**，服务端如实回
+  `10001 请求体格式不正确`（阶段 11 的修复在真容器上再次可见）。
+  验收脚本改用 Python 以 UTF-8 发请求，顺带把权限矩阵与工单闭环一次跑完。
+
+**遗留**：验收冒烟在开发库留下了 1 个会话、1 张已解决工单、1 条待优化问题
+（与昨天的演示数据同类，未清理，便于下次直接演示工作台）；
+阶段 15 记录的那次**未复现偶发失败**，其后共跑了 4 次门控全量（含本阶段这次），
+**均全绿**，仍未复现、仍无归因。
 
 ### 运行前置条件
 

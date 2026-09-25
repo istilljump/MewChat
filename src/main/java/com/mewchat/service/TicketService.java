@@ -46,17 +46,23 @@ public class TicketService extends ServiceImpl<TicketMapper, Ticket> {
 
     private static final Logger log = LoggerFactory.getLogger(TicketService.class);
 
-    /** 工单状态：待处理 */
-    private static final int STATUS_PENDING = 0;
+    /**
+     * 工单状态：待处理。
+     *
+     * <p>四个状态常量公开出去（而不是只在本类使用）是为了让统计装配器
+     * （{@code AdminStatsAssembler}）按状态计数时引用同一份定义 ——
+     * 口径写两份，改了服务层忘了改报表，仪表盘会静默按旧口径统计。
+     */
+    public static final int STATUS_PENDING = 0;
 
-    /** 工单状态：处理中 */
-    private static final int STATUS_PROCESSING = 1;
+    /** 工单状态：处理中，语义与取值见 {@link #STATUS_PENDING} 的说明 */
+    public static final int STATUS_PROCESSING = 1;
 
-    /** 工单状态：已解决 */
-    private static final int STATUS_RESOLVED = 2;
+    /** 工单状态：已解决，语义与取值见 {@link #STATUS_PENDING} 的说明 */
+    public static final int STATUS_RESOLVED = 2;
 
-    /** 工单状态：已关闭 */
-    private static final int STATUS_CLOSED = 3;
+    /** 工单状态：已关闭，语义与取值见 {@link #STATUS_PENDING} 的说明 */
+    public static final int STATUS_CLOSED = 3;
 
     /** 后台分页的默认每页条数 */
     private static final int DEFAULT_PAGE_SIZE = 20;

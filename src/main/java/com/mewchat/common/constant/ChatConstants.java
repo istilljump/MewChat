@@ -51,9 +51,6 @@ public final class ChatConstants {
 
     /* ==================== 会话 ==================== */
 
-    /** 会话 ID 请求头，前端用它续接同一轮对话 */
-    public static final String HEADER_SESSION_ID = "X-Session-Id";
-
     /** 单条用户消息长度上限，防止超长输入打爆 token 预算 */
     public static final int MAX_MESSAGE_LENGTH = 2000;
 }

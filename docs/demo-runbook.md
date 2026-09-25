@@ -16,7 +16,7 @@
 | 变量 | 作用 | 说明 |
 | --- | --- | --- |
 | `MEWCHAT_TOKEN_SECRET` | 令牌签名密钥 | **必填**，不设则应用启动失败（刻意如此）。至少 16 位随机串 |
-| `MYSQL_PASSWORD` | 数据库密码 | 本机开发库是 `root` / 口令见 local.env.bat（账号用默认的 `root`） |
+| `MYSQL_PASSWORD` | 数据库密码 | 本机开发库账号是 `root`，口令**不写进本文档** —— 见 `local.env.bat`（已被 `.gitignore` 忽略） |
 | `LLM_API_KEY` | 模型密钥 | 演示用真模型时填；用本地假端点时随便填一个非空值 |
 | `LLM_BASE_URL` | 模型端点 | 真厂商示例：`https://api.deepseek.com/v1` |
 | `LLM_MODEL` | 模型名 | 真厂商示例：`deepseek-chat` |
@@ -24,7 +24,7 @@
 ```bash
 # Git Bash
 export MEWCHAT_TOKEN_SECRET="demo-secret-0123456789abcdef"
-export MYSQL_PASSWORD="<你的库口令，见 local.env.bat>"
+export MYSQL_PASSWORD="<你本机的库口令，见 local.env.bat>"   # 口令不入仓库
 export LLM_BASE_URL=http://127.0.0.1:18124/v1
 export LLM_API_KEY=local-dev-key
 export LLM_MODEL=fake-model

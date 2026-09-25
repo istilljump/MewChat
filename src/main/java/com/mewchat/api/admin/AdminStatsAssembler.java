@@ -3,16 +3,20 @@ package com.mewchat.api.admin;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.mewchat.api.admin.dto.OptimizationChecklistView;
 import com.mewchat.api.admin.dto.StatsOverviewView;
+import com.mewchat.common.constant.ChatConstants;
 import com.mewchat.config.AgentProperties;
 import com.mewchat.dao.mysql.entity.Conversation;
 import com.mewchat.dao.mysql.entity.KnowledgeDocument;
 import com.mewchat.dao.mysql.entity.LowConfidenceQuestion;
 import com.mewchat.dao.mysql.entity.Message;
 import com.mewchat.dao.mysql.entity.Ticket;
+import com.mewchat.rag.document.DocumentIngestService;
 import com.mewchat.service.ConversationService;
+import com.mewchat.service.ConversationServiceImpl;
 import com.mewchat.service.KnowledgeChunkService;
 import com.mewchat.service.KnowledgeDocumentService;
 import com.mewchat.service.LowConfidenceQuestionService;
+import com.mewchat.service.LowConfidenceQuestionServiceImpl;
 import com.mewchat.service.MessageService;
 import com.mewchat.service.TicketService;
 import org.slf4j.Logger;
@@ -43,6 +47,18 @@ import java.util.Objects;
  * <p><b>查询成本</b>：全部是单表计数与一次聚合，没有 join。
  * 数据量大了以后这些 COUNT 会成为慢查询，届时该做的是预聚合（定时任务算好落表），
  * 而不是让后台首页继续实时扫表。
+ *
+ * <p><b>一处已知偏差（如实记录）</b>：三处聚合（消息质量均值、每日消息量、命中次数合计）
+ * 把 {@code AVG(...)} / {@code DATE(...)} 写在 Wrapper 的 {@code .select()} 里，
+ * 与 §四.3"手写 SQL 一律放 XML"不完全一致。保留现状的理由是它们只是单表聚合、
+ * 参数全部由 Wrapper 参数化，且当前没有真库测试覆盖 —— 搬迁要同时动 mapper 与
+ * service 接口，收益（可 grep、可复用）小于"改完只有冒烟验证"的风险。
+ * 若后续要给统计补真库测试或做预聚合，应当连同这段 SQL 一起搬进 XML。
+ *
+ * <p><b>状态与角色的取值一律引用定义处</b>（{@code ConversationServiceImpl} /
+ * {@code TicketService} / {@code LowConfidenceQuestionServiceImpl} /
+ * {@code DocumentIngestService} 的常量），不在本类里写数字字面量：
+ * 统计出错是不报错的错，口径写两份就会出现"服务层改了取值、仪表盘还按旧口径统计"。
  *
  * @author MewChat
  */
@@ -128,11 +144,11 @@ public class AdminStatsAssembler {
         return new StatsOverviewView.ConversationStats(
                 conversationService.count(),
                 conversationService.count(Wrappers.<Conversation>lambdaQuery()
-                        .eq(Conversation::getStatus, 1)),
+                        .eq(Conversation::getStatus, ConversationServiceImpl.STATUS_ACTIVE)),
                 conversationService.count(Wrappers.<Conversation>lambdaQuery()
-                        .eq(Conversation::getStatus, 2)),
+                        .eq(Conversation::getStatus, ConversationServiceImpl.STATUS_CLOSED)),
                 conversationService.count(Wrappers.<Conversation>lambdaQuery()
-                        .eq(Conversation::getStatus, 3)));
+                        .eq(Conversation::getStatus, ConversationServiceImpl.STATUS_HANDOFF)));
     }
 
     /**
@@ -145,23 +161,24 @@ public class AdminStatsAssembler {
      */
     private StatsOverviewView.MessageStats messageStats() {
         long assistantMessages = messageService.count(Wrappers.<Message>lambdaQuery()
-                .eq(Message::getRole, "assistant"));
+                .eq(Message::getRole, ChatConstants.ROLE_ASSISTANT));
 
         // 一次聚合取回三个数，而不是发三条 SQL：它们扫的是同一批行
         Map<String, Object> aggregate = firstRow(messageService.listMaps(Wrappers.<Message>query()
                 .select("AVG(confidence) AS avg_confidence",
                         "AVG(cost_ms) AS avg_cost_ms",
                         "SUM(total_tokens) AS total_tokens")
-                .eq("role", "assistant")));
+                .eq("role", ChatConstants.ROLE_ASSISTANT)));
 
         long lowConfidence = messageService.count(Wrappers.<Message>lambdaQuery()
-                .eq(Message::getRole, "assistant")
+                .eq(Message::getRole, ChatConstants.ROLE_ASSISTANT)
                 .isNotNull(Message::getConfidence)
                 .lt(Message::getConfidence, agentProperties.getLowConfidenceThreshold()));
 
         return new StatsOverviewView.MessageStats(
                 messageService.count(),
-                messageService.count(Wrappers.<Message>lambdaQuery().eq(Message::getRole, "user")),
+                messageService.count(Wrappers.<Message>lambdaQuery()
+                        .eq(Message::getRole, ChatConstants.ROLE_USER)),
                 assistantMessages,
                 toBigDecimal(aggregate.get("avg_confidence")),
                 lowConfidence,
@@ -177,10 +194,14 @@ public class AdminStatsAssembler {
     private StatsOverviewView.TicketStats ticketStats() {
         return new StatsOverviewView.TicketStats(
                 ticketService.count(),
-                ticketService.count(Wrappers.<Ticket>lambdaQuery().eq(Ticket::getStatus, 0)),
-                ticketService.count(Wrappers.<Ticket>lambdaQuery().eq(Ticket::getStatus, 1)),
-                ticketService.count(Wrappers.<Ticket>lambdaQuery().eq(Ticket::getStatus, 2)),
-                ticketService.count(Wrappers.<Ticket>lambdaQuery().eq(Ticket::getStatus, 3)));
+                ticketService.count(Wrappers.<Ticket>lambdaQuery()
+                        .eq(Ticket::getStatus, TicketService.STATUS_PENDING)),
+                ticketService.count(Wrappers.<Ticket>lambdaQuery()
+                        .eq(Ticket::getStatus, TicketService.STATUS_PROCESSING)),
+                ticketService.count(Wrappers.<Ticket>lambdaQuery()
+                        .eq(Ticket::getStatus, TicketService.STATUS_RESOLVED)),
+                ticketService.count(Wrappers.<Ticket>lambdaQuery()
+                        .eq(Ticket::getStatus, TicketService.STATUS_CLOSED)));
     }
 
     /**
@@ -194,7 +215,7 @@ public class AdminStatsAssembler {
                 chunkService.count(),
                 // 入库失败的文档在检索里是"查不到"的，这个数字必须能被看见
                 documentService.count(Wrappers.<KnowledgeDocument>lambdaQuery()
-                        .eq(KnowledgeDocument::getEmbedStatus, 3)));
+                        .eq(KnowledgeDocument::getEmbedStatus, DocumentIngestService.STATUS_FAILED)));
     }
 
     /**
@@ -204,15 +225,15 @@ public class AdminStatsAssembler {
      */
     private StatsOverviewView.FlywheelStats flywheelStats() {
         long pending = questionService.count(Wrappers.<LowConfidenceQuestion>lambdaQuery()
-                .eq(LowConfidenceQuestion::getOptimized, 0));
+                .eq(LowConfidenceQuestion::getOptimized, LowConfidenceQuestionServiceImpl.OPTIMIZED_PENDING));
         long clustered = questionService.count(Wrappers.<LowConfidenceQuestion>lambdaQuery()
-                .eq(LowConfidenceQuestion::getOptimized, 0)
+                .eq(LowConfidenceQuestion::getOptimized, LowConfidenceQuestionServiceImpl.OPTIMIZED_PENDING)
                 .isNotNull(LowConfidenceQuestion::getClusterKey));
 
         Map<String, Object> aggregate = firstRow(questionService.listMaps(
                 Wrappers.<LowConfidenceQuestion>query()
                         .select("SUM(hit_count) AS total_hits")
-                        .eq("optimized", 0)));
+                        .eq("optimized", LowConfidenceQuestionServiceImpl.OPTIMIZED_PENDING)));
 
         return new StatsOverviewView.FlywheelStats(
                 pending, clustered, Objects.requireNonNullElse(toLong(aggregate.get("total_hits")), 0L));
@@ -251,6 +272,13 @@ public class AdminStatsAssembler {
 
         List<StatsOverviewView.DailyCount> trend = new ArrayList<>(rows.size());
         for (Map<String, Object> row : rows) {
+            // 跳过 null 行：MyBatis 会把"一行全 NULL"映射成 null 元素（与 firstRow 同一个坑）。
+            // 本查询带 GROUP BY，空数据时是"没有行"而非"全 NULL 行"，因此这条守卫
+            // 实际很难触发；但把"聚合行可能为 null"当作本类的前置事实统一处理，
+            // 好过在每个遍历点各假设一次
+            if (row == null) {
+                continue;
+            }
             trend.add(new StatsOverviewView.DailyCount(
                     String.valueOf(row.get("day")), Objects.requireNonNullElse(toLong(row.get("cnt")), 0L)));
         }
@@ -353,14 +381,25 @@ public class AdminStatsAssembler {
     /**
      * 取聚合结果的第一行。
      *
-     * <p>聚合查询在没有匹配行时会返回一行全 null（或干脆没有行），两种都要能接住 ——
-     * 空库时打开后台首页不该报错。
+     * <p>聚合查询在没有匹配行时有<b>两种</b>返回形态，两种都要能接住，空库时打开后台首页不该报错：
+     * <ul>
+     *     <li>结果集为空（例如带 {@code GROUP BY} 的每日趋势查询）；</li>
+     *     <li>结果集有一行、但<b>每个列都是 NULL</b>（不带 {@code GROUP BY} 的
+     *         {@code SUM/AVG} 在空表上就是这样）。MyBatis 会把这种"全 NULL 行"
+     *         映射成 {@code null} 元素 —— 只判 {@code rows.isEmpty()} 会漏掉它，
+     *         随后 {@code aggregate.get(...)} 直接 NPE，表现为<b>空库打开统计总览 500</b>
+     *         （真容器验收时抓到的就是这个）。</li>
+     * </ul>
      *
      * @param rows 查询结果
-     * @return 第一行；没有数据时返回空表
+     * @return 第一行；没有数据或行为空时返回空表
      */
     private static Map<String, Object> firstRow(List<Map<String, Object>> rows) {
-        return rows == null || rows.isEmpty() ? Map.of() : rows.get(0);
+        if (rows == null || rows.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> row = rows.get(0);
+        return row == null ? Map.of() : row;
     }
 
     /**

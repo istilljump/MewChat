@@ -71,11 +71,16 @@ public class SecurityConfig {
     /** Bearer 令牌前缀，不区分大小写 */
     private static final String BEARER_PREFIX = "bearer ";
 
-    /** 免认证路径：登录接口与健康检查 */
+    /**
+     * 免认证路径：仅登录接口。
+     *
+     * <p>这里刻意不再列 {@code /actuator/health}：项目没有引入 actuator 依赖，
+     * 那条路径实际返回 404，留着会让人以为存在健康检查端点
+     * （部署方按它做存活探测会一直失败）。真要健康端点时应先补依赖再放行。
+     */
     private static final String[] PUBLIC_PATHS = {
             "/api/auth/login",
-            "/favicon.ico",
-            "/actuator/health"
+            "/favicon.ico"
     };
 
     private final ObjectMapper objectMapper;

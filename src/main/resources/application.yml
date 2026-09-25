@@ -98,8 +98,13 @@ mewchat:
   # 配置项归到本前缀下，写 langchain4j.open-ai.* 不会生效
   llm:
     chat:
-      # ---- 预留 API Key 位置：优先读环境变量 LLM_API_KEY ----
-      # 必须非空：模型 Bean 创建时会校验，留空会导致启动失败
+      # ---- API Key：优先读环境变量 LLM_API_KEY ----
+      # 默认值是占位值（不是真实密钥）。留着它是有意的：没有模型凭证的环境
+      # （演示、纯接口联调）也能启动，每轮对话会在模型调用处失败并走降级
+      # （意图识别 → UNKNOWN，回复 → 追问/兜底）。启动日志里会有一条 WARN 说明此事，
+      # 因此"应用启动成功"不等于"模型接好了"。
+      # 只有真正留空（LLM_API_KEY= 且删掉默认值）才会启动失败 —— 那是配置错误。
+      # 接真实模型：设置环境变量 LLM_API_KEY 即可，不必改本文件。
       api-key: ${LLM_API_KEY:sk-REPLACE-WITH-YOUR-REAL-KEY}
       # 示例值（DeepSeek）。DeepSeek / 通义千问(兼容模式) / 智谱GLM 等均可，
       # 换厂商只改 base-url 与 model-name，不用改代码

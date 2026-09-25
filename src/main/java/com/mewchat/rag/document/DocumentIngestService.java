@@ -43,8 +43,13 @@ public class DocumentIngestService {
     /** 向量化状态：已入库（关键词与向量均写入成功） */
     private static final int STATUS_INDEXED = 2;
 
-    /** 向量化状态：失败 */
-    private static final int STATUS_FAILED = 3;
+    /** 向量化状态：失败。
+     *
+     * <p>公开出去是为了让统计装配器（{@code AdminStatsAssembler}）统计
+     * "入库失败的文档数"时引用同一份定义：这个数字要能被运营看见，
+     * 口径更不能与写入侧分叉（失败文档在检索里表现为"查不到"）。
+     */
+    public static final int STATUS_FAILED = 3;
 
     /** 未指定分类时的默认值，与建表脚本里的默认值保持一致 */
     private static final String DEFAULT_CATEGORY = "default";
