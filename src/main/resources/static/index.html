@@ -53,6 +53,7 @@
     <main class="main">
         <header class="topbar">
             <div class="brand-row">
+                <button id="menu-toggle" class="icon-btn menu-toggle" type="button" title="会话记录">☰</button>
                 <span class="brand-logo">🐱</span>
                 <div>
                     <div class="brand-title">小喵 · 智能客服</div>
@@ -71,7 +72,10 @@
         </section>
 
         <footer class="composer">
-            <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <div class="composer-input">
+                <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+                <span id="char-count" class="char-count" hidden></span>
+            </div>
             <button id="send" class="btn btn-primary" type="button">发送</button>
         </footer>
     </main>

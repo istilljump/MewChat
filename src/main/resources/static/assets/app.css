@@ -375,14 +375,47 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
     background: var(--paper);
 }
 
+.composer-input { flex: 1; min-width: 0; position: relative; }
+
 .composer textarea {
-    flex: 1;
+    width: 100%;
     resize: none;
     max-height: 140px;
     line-height: 1.6;
 }
 
+/* 字数计数：常驻输入框右下角内侧；接近上限变橙、超限变红 */
+.char-count {
+    position: absolute;
+    right: 10px;
+    bottom: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    background: rgba(255, 253, 246, .9);
+    padding: 0 4px;
+    border: 1px solid #d9cfb8;
+}
+
+.char-count.near { color: var(--accent-deep); border-color: var(--accent-deep); }
+.char-count.over { color: var(--danger); border-color: var(--danger); font-weight: 700; }
+
+/* 行内代码：模型回答里偶发的字段名/单号 */
+.answer-body code {
+    font-family: Consolas, Menlo, monospace;
+    font-size: .92em;
+    padding: 0 4px;
+    background: #fff2d8;
+    border: 1px solid #d9cfb8;
+}
+
+/* 列表缩进与段落间距：无序列表在窄卡片里顶格会显得挤 */
+.answer-body ul, .answer-body ol { margin: 6px 0; padding-left: 22px; }
+.answer-body p { margin: 6px 0; }
+
 .composer .btn-primary { width: auto; margin: 0; padding: 12px 22px; }
+
+/* 移动端菜单开关：桌面隐藏，窄屏出现 */
+.menu-toggle { display: none; font-size: 16px; }
 
 /* ==================== 提示条 ==================== */
 
@@ -403,7 +436,23 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
 
 @media (max-width: 720px) {
     .app { grid-template-columns: 1fr; }
-    .sidebar { display: none; }
+    .menu-toggle { display: inline-block; }
+
+    /* 侧边栏改为抽屉：点 ☰ 唤起，盖在内容上；选会话或点主区即收回 */
+    .sidebar {
+        display: flex;
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(300px, 82vw);
+        z-index: 15;
+        transform: translateX(-102%);
+        transition: transform .18s ease;
+        border-right: var(--border);
+    }
+
+    body.sidebar-open .sidebar { transform: translateX(0); box-shadow: 8px 0 0 rgba(27, 27, 27, .15); }
     .answer-card, .bubble-user { max-width: 92%; }
 }
 

@@ -439,7 +439,12 @@ public class FakeOpenAi {
             return List.of("该类目的退换货政策如下：", "具体期限与条件以政策工具返回的结果为准。");
         }
         if (prompt.contains("赠送品") || prompt.contains("赠品")) {
-            return List.of("赠品随主商品一起发出。", "若赠品缺货，", "会在到货后 3 个工作日内单独寄出。");
+            // 刻意带 Markdown（加粗 / 列表 / 行内代码）：这一路是对话前端渲染器的活样本，
+            // 演示时能直接看到"模型输出的列表与加粗在页面上长什么样"
+            return List.of("关于赠品的发货规则如下：\n\n",
+                    "- 赠品**随主商品一起发出**，无需单独下单；\n",
+                    "- 若赠品缺货，会在到货后 `3` 个工作日内单独寄出。\n\n",
+                    "还有其他想了解的吗？");
         }
         return List.of("您好，", "我按您提供的信息查了一下，", "以下是查询结果。");
     }
@@ -486,7 +491,7 @@ public class FakeOpenAi {
     private static String chunk(String content) {
         return "data: {\"id\":\"chatcmpl-fake\",\"object\":\"chat.completion.chunk\",\"created\":1,"
                 + "\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\","
-                + "\"content\":\"" + content + "\"},\"finish_reason\":null}]}\n\n";
+                + "\"content\":\"" + escape(content) + "\"},\"finish_reason\":null}]}\n\n";
     }
 
     /**
@@ -509,8 +514,24 @@ public class FakeOpenAi {
         }
     }
 
+    /**
+     * JSON 字符串转义。
+     *
+     * <p>反斜杠最先转义（后续插入的转义序列不能再被翻倍）。
+     * <b>控制字符必须转义</b>：JSON 字符串里不允许出现裸换行 ——
+     * 罐头回答带 {@code \n} 时不过这一步，整个流式响应就是非法 JSON，
+     * 客户端解析直接失败（实测：表现是"流式生成失败，已推送 0 字"，
+     * 而假端点这边看日志一切正常）。流式与非流式两条路径都走它。
+     *
+     * @param text 原文
+     * @return 可安全嵌入 JSON 字符串的文本
+     */
     private static String escape(String text) {
-        return text.replace("\\", "\\\\").replace("\"", "\\\"");
+        return text.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 
     private static String compact(String text) {

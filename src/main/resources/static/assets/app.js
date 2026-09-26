@@ -41,6 +41,8 @@
         who: document.getElementById('who'),
         logout: document.getElementById('logout'),
         clearAll: document.getElementById('clear-all'),
+        charCount: document.getElementById('char-count'),
+        menuToggle: document.getElementById('menu-toggle'),
         sessions: document.getElementById('session-list'),
         newSession: document.getElementById('new-session'),
         messages: document.getElementById('messages'),
@@ -123,6 +125,117 @@
     function scrollToBottom() {
         el.messages.scrollTop = el.messages.scrollHeight;
     }
+
+    /**
+     * 是否贴着消息区底部。
+     *
+     * 流式输出期间的"自动滚到底"只应发生在用户本来就在看最新内容时 ——
+     * 用户正往上翻历史，却被每秒几次的滚动拽回底部，是聊天界面最招人烦的行为之一。
+     * 阈值取 80px：比一行文字略高，既不误判也不需要精确贴底。
+     */
+    function nearBottom() {
+        return el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 80;
+    }
+
+    /** 仅当用户贴底时才跟随滚动（见 nearBottom 的说明） */
+    function autoScroll() {
+        if (nearBottom()) {
+            el.messages.scrollTop = el.messages.scrollHeight;
+        }
+    }
+
+    /**
+     * 转义全部 HTML 特殊字符。
+     *
+     * 回答正文可能来自模型输出、也可能来自知识库片段 —— 都是不可直接信任的内容。
+     * 一律先转义，后续的"格式化"只往安全的方向加标签，不保留原文里的任何标签。
+     */
+    function escapeHtml(text) {
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    /**
+     * 极简 Markdown 渲染（自实现，不引库）。
+     *
+     * 为什么只支持一个子集：客服回答里实际出现的是加粗、列表、行内代码、分段这几样；
+     * 完整 Markdown 要引入解析库（一个外部依赖 + 一份要跟踪的安全公告），
+     * 而其中大部分能力在这个场景里永远用不上。自实现约 60 行，行为完全可预期。
+     *
+     * 安全模型：输入先经 escapeHtml 全量转义，之后只做"文本 -> 白名单标签"的替换 ——
+     * 原文里的任何 HTML 都只会以文字形式出现，不存在二次解析。
+     * 流式过程中未闭合的标记（如只有一个 **）按字面显示，闭合后自然恢复格式。
+     *
+     * @param text 回答原文（未转义）
+     * @return 可安全 innerHTML 的 HTML 片段
+     */
+    function renderMarkdown(text) {
+        if (!text) { return ''; }
+        var lines = escapeHtml(text).split(/\r?\n/);
+        var out = [];
+        var listTag = null;
+
+        // 结束进行中的列表（遇到非列表行或文末时调用）
+        function closeList() {
+            if (listTag) {
+                out.push('</' + listTag + '>');
+                listTag = null;
+            }
+        }
+
+        // 行内格式：`代码` 与 **加粗**。先代码后加粗，避免代码内部的星号被误判
+        function inline(line) {
+            return line
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        }
+
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            var bullet = line.match(/^\s*[-*]\s+(.*)$/);
+            // 有序序号：ASCII "1. "（必须有空格，否则 "1.5万元" 会被误判成列表项）；
+            // 中文 "1、第一条"（顿号后通常不空格，因此不要求）
+            var ordered = line.match(/^\s*\d+(?:[.]\s+|、\s*)(.*)$/);
+
+            if (bullet) {
+                if (listTag !== 'ul') {
+                    closeList();
+                    out.push('<ul>');
+                    listTag = 'ul';
+                }
+                out.push('<li>' + inline(bullet[1]) + '</li>');
+            } else if (ordered) {
+                if (listTag !== 'ol') {
+                    closeList();
+                    out.push('<ol>');
+                    listTag = 'ol';
+                }
+                out.push('<li>' + inline(ordered[1]) + '</li>');
+            } else if (!line.trim()) {
+                // 空行 = 分段；列表在这里结束
+                closeList();
+            } else {
+                closeList();
+                out.push('<p>' + inline(line) + '</p>');
+            }
+        }
+        closeList();
+        return out.join('');
+    }
+
+    /** 意图枚举名到中文名的映射（服务端 done 事件里带的是枚举名） */
+    var INTENT_LABELS = {
+        KNOWLEDGE_QA: '知识问答',
+        ORDER_QUERY: '订单查询',
+        LOGISTICS_QUERY: '物流查询',
+        PRODUCT_QUERY: '商品查询',
+        REFUND_ASK: '退款咨询',
+        COMPLAINT: '投诉建议',
+        UNKNOWN: '无法识别'
+    };
 
     /** 退出登录：清掉本地令牌并回到登录层（服务端是无状态令牌，没有"登出接口"） */
     function signOut(message) {
@@ -227,6 +340,13 @@
         el.messages.appendChild(el.emptyState);
         renderEmptyStateExamples();
         await loadSessions();
+
+        // 自动打开最近一段会话：刷新页面后"接着上次聊"是默认期望，
+        // 让用户自己再点一下才能看到上文，等于把恢复现场的成本转嫁给用户。
+        // 没有任何历史会话时保持空状态（示例问题正好派上用场）
+        if (!state.currentSessionId && state.sessions.length) {
+            await openSession(state.sessions[0].sessionId);
+        }
     }
 
     /* ==================== 会话列表 ==================== */
@@ -390,7 +510,8 @@
                 appendUserBubble(message.content);
             } else {
                 var card = appendAnswerCard();
-                card.body.textContent = message.content;
+                // 回答按 Markdown 渲染（模型经常输出加粗与列表）；内部已做全量转义
+                card.body.innerHTML = renderMarkdown(message.content);
                 renderCitations(card, message.citations);
                 renderMeta(card, {
                     agentName: message.agentName,
@@ -554,6 +675,13 @@
 
     function renderMeta(card, info) {
         card.meta.innerHTML = '';
+        // 意图显示中文名（done 事件里是枚举名）：用户不该需要知道 KNOWLEDGE_QA 是什么。
+        // 映射表缺项时显示原文而不是隐藏 —— 少一条信息好过静默吞掉
+        if (info.intent) {
+            var intent = document.createElement('span');
+            intent.textContent = INTENT_LABELS[info.intent] || info.intent;
+            card.meta.appendChild(intent);
+        }
         if (info.agentName) {
             var agent = document.createElement('span');
             agent.textContent = '处理：' + info.agentName;
@@ -765,6 +893,7 @@
         var buffer = '';
         var finalText = '';
         var gotFragment = false;
+        var accumulated = '';
         var failure = null;
 
         for (;;) {
@@ -786,12 +915,16 @@
                     if (!gotFragment) { card.progress.textContent = payload.data || '正在处理'; }
                 } else if (event.name === 'message') {
                     gotFragment = true;
-                    card.body.textContent += (payload.data || '');
-                    scrollToBottom();
+                    // 流式期间维护"累积原文"并整段重渲染：片段可能把一个 ** 切成两半，
+                    // 追加渲染会让半截标记永远留在屏幕上；整段重渲则闭合后自然恢复。
+                    // 渲染内部已全量转义，此处 innerHTML 是安全的
+                    accumulated += (payload.data || '');
+                    card.body.innerHTML = renderMarkdown(accumulated);
+                    autoScroll();
                 } else if (event.name === 'done') {
                     // 权威结果：整体替换（流式过程中可能推过半句话，且可能已被降级覆盖）
                     finalText = (payload.data && payload.data.content) || finalText;
-                    card.body.textContent = finalText;
+                    card.body.innerHTML = renderMarkdown(finalText);
                     renderCitations(card, payload.data && payload.data.citations);
                     renderMeta(card, payload.data || {});
                     // 记下落库消息ID：点赞/点踩要指出"给哪条消息反馈"。
@@ -841,9 +974,30 @@
     });
 
     // 输入框随内容长高（上限由 CSS 的 max-height 控制）
-    el.input.addEventListener('input', function () {
-        el.input.style.height = 'auto';
-        el.input.style.height = Math.min(el.input.scrollHeight, 140) + 'px';
+    el.input.addEventListener('input', updateCharCount);
+
+    /**
+     * 字数计数：服务端对单条消息有 2000 字上限，超限会被整条拒绝。
+     * 与其让用户发出去才收到报错，不如在接近上限时就看见数字、超限时直接禁发。
+     * 平时不显示计数（多数消息远够不着上限，常驻数字只是噪声）。
+     */
+    function updateCharCount() {
+        var length = el.input.value.length;
+        var over = length > 2000;
+        var near = length > 1800;
+        el.charCount.hidden = !near && !over;
+        el.charCount.textContent = over ? (length + ' / 2000（超限，删减后再发）') : (length + ' / 2000');
+        el.charCount.className = 'char-count' + (over ? ' over' : (near ? ' near' : ''));
+        el.send.disabled = state.sending || over;
+    }
+
+    // 移动端：侧边栏默认隐藏（见 CSS），用顶栏按钮唤起；点主区任意处收回
+    el.menuToggle.addEventListener('click', function (event) {
+        event.stopPropagation();
+        document.body.classList.toggle('sidebar-open');
+    });
+    el.messages.addEventListener('click', function () {
+        document.body.classList.remove('sidebar-open');
     });
 
     /* ==================== 启动 ==================== */
