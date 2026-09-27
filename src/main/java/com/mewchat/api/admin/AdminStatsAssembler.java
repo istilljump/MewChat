@@ -183,7 +183,13 @@ public class AdminStatsAssembler {
                 toBigDecimal(aggregate.get("avg_confidence")),
                 lowConfidence,
                 toLong(aggregate.get("avg_cost_ms")),
-                toLong(aggregate.get("total_tokens")));
+                toLong(aggregate.get("total_tokens")),
+                // 反馈取值引用 MessageService 的常量：点赞/点踩的存储值只有一处定义，
+                // 统计若自己写 1/2，改常量时仪表盘会静默按旧口径计数
+                messageService.count(Wrappers.<Message>lambdaQuery()
+                        .eq(Message::getFeedback, MessageService.FEEDBACK_UP)),
+                messageService.count(Wrappers.<Message>lambdaQuery()
+                        .eq(Message::getFeedback, MessageService.FEEDBACK_DOWN)));
     }
 
     /**

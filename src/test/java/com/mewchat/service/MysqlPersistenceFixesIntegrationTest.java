@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.mewchat.agent.ChatContext;
 import com.mewchat.agent.ChatState;
 import com.mewchat.agent.memory.ChatMemoryService;
+import com.mewchat.common.exception.BizException;
 import com.mewchat.common.security.AuthenticatedUser;
 import com.mewchat.dao.mysql.entity.Conversation;
 import com.mewchat.dao.mysql.entity.LowConfidenceQuestion;
@@ -446,6 +447,39 @@ class MysqlPersistenceFixesIntegrationTest {
                 .as("超长标题必须被截断而不是写入失败")
                 .isNotEmpty()
                 .hasSizeLessThanOrEqualTo(100);
+    }
+
+    /**
+     * 重命名要真的写库、改完不再被自动标题覆盖、且别人改不了我的会话。
+     *
+     * <p>第二条最关键：改名后继续发言，{@code updateTitleIfBlank} 的条件更新
+     * 只写空标题，若条件写错（或改名路径误走了无条件置空的字段），用户起的名字
+     * 会被下一条消息悄悄改回去 —— 这类"写回旧值"不报错，Mock 验证不了。
+     */
+    @Test
+    void renameSessionShouldPersistAndResistOverwriteAndOwnership() {
+        Long mine = 997_711_223L;
+        Long other = 997_711_224L;
+
+        String session = newSessionId();
+        conversationService.getOrCreate(session, mine);
+        chatMemoryService.saveUserMessage(session, uniqueQuestion("自动标题来自首句"));
+
+        // 连续空白要被压掉（与自动标题同一套归一化），但不能追加省略号
+        conversationService.renameSession(session, mine, "  我的   退货  会话  ");
+        assertThat(conversationService.getBySessionId(session).getTitle())
+                .as("重命名必须写库并归一化空白")
+                .isEqualTo("我的 退货 会话");
+
+        chatMemoryService.saveUserMessage(session, uniqueQuestion("改名后的后续消息"));
+        assertThat(conversationService.getBySessionId(session).getTitle())
+                .as("改名后自动标题不能再覆盖用户起的名字")
+                .isEqualTo("我的 退货 会话");
+
+        assertThatThrownBy(() -> conversationService.renameSession(session, other, "抢名"))
+                .as("别人的会话改不了，且与'不存在'同一口径")
+                .isInstanceOf(BizException.class)
+                .hasMessage(ConversationService.SESSION_UNAVAILABLE_MESSAGE);
     }
 
     /**

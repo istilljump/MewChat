@@ -1,14 +1,18 @@
 package com.mewchat.api.admin;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.mewchat.api.admin.dto.StatsOverviewView;
 import com.mewchat.config.AgentProperties;
+import com.mewchat.dao.mysql.entity.Message;
 import com.mewchat.service.ConversationService;
 import com.mewchat.service.KnowledgeChunkService;
 import com.mewchat.service.KnowledgeDocumentService;
 import com.mewchat.service.LowConfidenceQuestionService;
 import com.mewchat.service.MessageService;
 import com.mewchat.service.TicketService;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -21,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willAnswer;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -128,6 +133,45 @@ class AdminStatsAssemblerTest {
         assertThat(assembler.checklist().totalQuestions()).isZero();
     }
 
+    /**
+     * 反馈聚合计数（点赞/点踩）必须按"反馈列的取值"区分，而不是按调用次序。
+     *
+     * <p>{@code messageService.count(any())} 被消息质量、反馈等多项统计共用，
+     * 若用 Mockito 的顺序打桩（第一次返回 3、第二次返回 1），实现里任何一处
+     * 调整调用顺序都会让断言静默地错位 —— 顺序不是契约，参数才是。
+     * 因此替身按 wrapper 携带的参数值分发：包含 1 是点赞、包含 2 是点踩。
+     */
+    @Test
+    void overviewShouldAggregateFeedbackCounts() {
+        // 让 lambda 列解析可用：lambda wrapper 渲染 SQL 时需要实体的 TableInfo，
+        // 纯单测环境里没有 MyBatis 帮它注册 —— 这里手工登记一次（幂等，与生产注册的是同一份）
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), Message.class);
+
+        given(messageService.count()).willReturn(20L);
+        given(messageService.count(any())).willAnswer(invocation -> {
+            Wrapper<?> wrapper = invocation.getArgument(0);
+            // 必须先渲染一次：MP 3.5.9 的条件参数（eq 的值）在渲染 SQL 时才真正
+            // 注册进 paramNameValuePairs —— Mock 不会触发渲染，直接读是空的。
+            // getParamNameValuePairs 定义在 AbstractWrapper 上，接口 Wrapper 没有它，
+            // 而 select() 返回的 QueryWrapper 与 lambdaQuery() 返回的
+            // LambdaQueryWrapper 都是 AbstractWrapper，此处的向下转型是安全的
+            wrapper.getSqlSegment();
+            @SuppressWarnings("unchecked")
+            var abstractWrapper = (com.baomidou.mybatisplus.core.conditions.AbstractWrapper<Object, ?, ?>) wrapper;
+            Map<String, Object> params = abstractWrapper.getParamNameValuePairs();
+            if (params.containsValue(MessageService.FEEDBACK_UP)) { return 3L; }
+            if (params.containsValue(MessageService.FEEDBACK_DOWN)) { return 1L; }
+            return 2L; // 其余按角色的计数（用户消息 / 助手消息 / 低置信），值不重要
+        });
+        stubEverythingElseEmpty();
+
+        StatsOverviewView overview = assembler.overview();
+
+        assertThat(overview.messages().feedbackUp()).isEqualTo(3L);
+        assertThat(overview.messages().feedbackDown()).isEqualTo(1L);
+    }
+
     /* ==================== 辅助 ==================== */
 
     /**
@@ -142,6 +186,27 @@ class AdminStatsAssemblerTest {
         given(conversationService.count(any())).willReturn(0L);
         given(messageService.count()).willReturn(0L);
         given(messageService.count(any())).willReturn(0L);
+        given(messageService.listMaps(any(Wrapper.class))).willReturn(Arrays.asList((Map<String, Object>) null));
+        given(ticketService.count()).willReturn(0L);
+        given(ticketService.count(any())).willReturn(0L);
+        given(documentService.count()).willReturn(0L);
+        given(documentService.count(any())).willReturn(0L);
+        given(chunkService.count()).willReturn(0L);
+        given(questionService.count()).willReturn(0L);
+        given(questionService.count(any())).willReturn(0L);
+        given(questionService.listMaps(any(Wrapper.class))).willReturn(Arrays.asList((Map<String, Object>) null));
+        given(questionService.listPendingForChecklist(anyInt())).willReturn(List.of());
+    }
+
+    /**
+     * 除消息计数外的其余服务全部打桩为空库（供只关心某一项统计的用例复用）。
+     *
+     * <p>与 {@link #stubEmptyDatabase()} 分开的原因：反馈聚合那条用例要单独定制
+     * {@code messageService.count(any())} 的返回，不能让它再把消息计数一并置零。
+     */
+    private void stubEverythingElseEmpty() {
+        given(conversationService.count()).willReturn(0L);
+        given(conversationService.count(any())).willReturn(0L);
         given(messageService.listMaps(any(Wrapper.class))).willReturn(Arrays.asList((Map<String, Object>) null));
         given(ticketService.count()).willReturn(0L);
         given(ticketService.count(any())).willReturn(0L);

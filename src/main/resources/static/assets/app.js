@@ -28,7 +28,10 @@
         username: localStorage.getItem(USER_KEY) || '',
         currentSessionId: '',
         sessions: [],
-        sending: false
+        sending: false,
+        // 当前流式请求的中止控制器：用户点"停止"时用它掐断读取。
+        // 注意它只中止"接收"，服务端会把本轮跑完并落库（见停止时的提示文案）
+        abortController: null
     };
 
     var el = {
@@ -40,6 +43,7 @@
         app: document.getElementById('app'),
         who: document.getElementById('who'),
         logout: document.getElementById('logout'),
+        adminLink: document.getElementById('admin-link'),
         clearAll: document.getElementById('clear-all'),
         charCount: document.getElementById('char-count'),
         menuToggle: document.getElementById('menu-toggle'),
@@ -89,6 +93,20 @@
         if (time.toDateString() === yesterday.toDateString()) { return '昨天 ' + clock; }
 
         return (time.getMonth() + 1) + '-' + time.getDate() + ' ' + clock;
+    }
+
+    /**
+     * 当前时间，格式与服务端时间串一致（yyyy-MM-dd HH:mm:ss）。
+     *
+     * <p>给 {@link humanTime} 喂本地时间用：流式回答刚完成时服务端不返回时间字段，
+     * 复用同一条渲染路径（而不是给卡片单独写一套"此刻"的显示），
+     * 刷新后历史里显示的服务端时间与刚才看到的本地时间才是一套口径。
+     */
+    function localTimeString() {
+        var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+        var now = new Date();
+        return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+            + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
     }
 
     /**
@@ -142,6 +160,25 @@
         if (nearBottom()) {
             el.messages.scrollTop = el.messages.scrollHeight;
         }
+    }
+
+    /**
+     * 发送按钮的双态渲染："发送"与"停止"共用同一个按钮。
+     *
+     * <p>回答期间按钮必须保持可点（它的职责变成了"停止"），
+     * 因此不能沿用"sending 就禁用"的老逻辑 —— 那会让停止永远点不到。
+     * 超限禁发只对"发送"这个角色生效。
+     */
+    function updateSendButton() {
+        if (state.sending) {
+            el.send.textContent = '■ 停止';
+            el.send.disabled = false;
+            el.send.classList.add('sending');
+            return;
+        }
+        el.send.textContent = '发送';
+        el.send.disabled = el.input.value.length > 2000;
+        el.send.classList.remove('sending');
     }
 
     /**
@@ -331,10 +368,33 @@
         clearAllSessions();
     });
 
+    /**
+     * 从令牌里解出用户类型（1客户 2客服 3管理员）。
+     *
+     * <p>payload 只是 Base64URL 编码、不是加密（服务端文档明确写了这一点），
+     * 前端解码它只为决定"要不要显示后台入口"，权限本身完全由服务端把关 ——
+     * 就算有人改本地脚本把入口显示出来，后台接口照样会 403。
+     * 解析失败按普通客户处理：入口隐藏只是展示问题，不该让它抛错。
+     *
+     * @returns {number} 用户类型
+     */
+    function readUserType() {
+        try {
+            var part = (state.token || '').split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+            var payload = atob(part);
+            return parseInt(payload.split('|')[2], 10) || 1;
+        } catch (e) {
+            return 1;
+        }
+    }
+
     async function enterApp() {
         el.loginLayer.hidden = true;
         el.app.hidden = false;
         el.who.textContent = state.username;
+        // 客服与管理员给一个后台入口：他们的工作面（工单/对话记录）在 /admin.html，
+        // 藏在另一张要手输地址的页面里等于没有
+        el.adminLink.hidden = readUserType() < 2;
         el.emptyState.hidden = false;
         el.messages.innerHTML = '';
         el.messages.appendChild(el.emptyState);
@@ -409,12 +469,97 @@
                 deleteSession(session);
             });
 
+            var rename = document.createElement('button');
+            rename.type = 'button';
+            rename.className = 'session-rename';
+            rename.textContent = '✎';
+            rename.title = '重命名这段会话';
+            rename.addEventListener('click', function (event) {
+                event.stopPropagation();
+                startRename(item, session, title);
+            });
+
             item.appendChild(no);
             item.appendChild(title);
             item.appendChild(meta);
+            item.appendChild(rename);
             item.appendChild(del);
             el.sessions.appendChild(item);
         });
+    }
+
+    /**
+     * 进入会话重命名的行内编辑态。
+     *
+     * <p>用行内输入框而不是弹窗：改名是顺手的小动作，弹窗既打断操作流又不必要。
+     * Enter 保存、Esc 取消，点别处（失焦）视为取消 —— 与桌面软件对文件改名的一致直觉。
+     *
+     * @param item    会话列表项节点
+     * @param session 会话数据
+     * @param title   标题文本节点（编辑时被输入框临时替换）
+     */
+    function startRename(item, session, title) {
+        if (item.querySelector('.rename-input')) { return; }
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'rename-input';
+        input.maxLength = 100; // 与服务端列宽（VARCHAR(100)）一致：超出的字输不进去，好过提交才报错
+        input.value = session.title || '';
+
+        var done = false;
+        function finish(save) {
+            if (done) { return; }
+            done = true;
+            if (save) {
+                renameSession(session, input.value);
+            }
+            input.replaceWith(title);
+        }
+
+        // 编辑态下点列表项不能触发"打开会话"：输入框的点击必须就地消化
+        input.addEventListener('click', function (event) { event.stopPropagation(); });
+        input.addEventListener('keydown', function (event) {
+            // 输入框里也可能用中文输入法打字：候选确认的回车不能被当成"保存"
+            if (event.isComposing || event.keyCode === 229) { return; }
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                finish(true);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                finish(false);
+            }
+        });
+        input.addEventListener('blur', function () { finish(false); });
+
+        title.replaceWith(input);
+        input.focus();
+        input.select();
+    }
+
+    /**
+     * 保存重命名。
+     *
+     * <p>空白标题不发请求（等于没改）；成功后更新本地列表并重渲染。
+     * 失败时列表保持原样 —— 服务端没存下来的名字不能先显示出来。
+     *
+     * @param session 会话数据
+     * @param value   用户输入的新标题
+     */
+    async function renameSession(session, value) {
+        var name = (value || '').trim();
+        if (!name || name === session.title) { return; }
+        try {
+            await api('/api/chat/session/' + encodeURIComponent(session.sessionId) + '/title', {
+                method: 'PUT',
+                body: { title: name }
+            });
+            session.title = name;
+            renderSessions();
+            toast('已重命名');
+        } catch (e) {
+            toast('重命名失败：' + e.message);
+        }
     }
 
     /**
@@ -507,7 +652,7 @@
         }
         history.forEach(function (message) {
             if (message.role === 'user') {
-                appendUserBubble(message.content);
+                appendUserBubble(message.content, message.createTime);
             } else {
                 var card = appendAnswerCard();
                 // 回答按 Markdown 渲染（模型经常输出加粗与列表）；内部已做全量转义
@@ -515,7 +660,10 @@
                 renderCitations(card, message.citations);
                 renderMeta(card, {
                     agentName: message.agentName,
-                    confidence: message.confidence
+                    confidence: message.confidence,
+                    // 历史里的时间是服务端落库时间；流式路径（renderMeta 的另一处调用）
+                    // 没有服务端时间，用本地时钟补
+                    createTime: message.createTime
                 });
                 // 历史里带着已有反馈，按钮要回显当时的选择（否则刷新后看起来像没反馈过）
                 renderActions(card, message.id, message.feedback);
@@ -526,13 +674,19 @@
         scrollToBottom();
     }
 
-    function appendUserBubble(text) {
+    function appendUserBubble(text, createTime) {
         var row = document.createElement('div');
         row.className = 'msg user';
         var bubble = document.createElement('div');
         bubble.className = 'bubble-user';
         bubble.textContent = text;
         row.appendChild(bubble);
+        // 发出时间："这单什么时候发货"这类问题的回答与时间强相关，
+        // 隔天回看时没有时间戳根本对不上"今天"指的是哪天
+        var time = document.createElement('div');
+        time.className = 'bubble-time';
+        time.textContent = humanTime(createTime);
+        row.appendChild(time);
         el.messages.appendChild(row);
         scrollToBottom();
     }
@@ -675,6 +829,17 @@
 
     function renderMeta(card, info) {
         card.meta.innerHTML = '';
+        // 回答时间：优先服务端落库时间（历史），没有时用本地时钟（流式刚答完）。
+        // 隔天回看历史时，"今天是几号"这类回答没有时间对不上
+        if (info.createTime) {
+            var time = document.createElement('span');
+            time.textContent = humanTime(info.createTime);
+            card.meta.appendChild(time);
+        } else {
+            var now = document.createElement('span');
+            now.textContent = humanTime(localTimeString());
+            card.meta.appendChild(now);
+        }
         // 意图显示中文名（done 事件里是枚举名）：用户不该需要知道 KNOWLEDGE_QA 是什么。
         // 映射表缺项时显示原文而不是隐藏 —— 少一条信息好过静默吞掉
         if (info.intent) {
@@ -813,29 +978,46 @@
         }
 
         state.sending = true;
-        el.send.disabled = true;
+        updateSendButton();
         el.input.value = '';
         el.input.style.height = 'auto';
         // 只收起空状态提示，不清屏：连续对话必须看得见前面的问答
         hideEmptyState();
-        appendUserBubble(text);
+        appendUserBubble(text, localTimeString());
 
         var card = appendAnswerCard();
         card.progress.hidden = false;
         card.progress.textContent = '正在处理';
 
         var succeeded = false;
+        // 每轮一个中止控制器：点"停止"掐断的是"读取"，后台仍会把本轮完成并落库
+        var controller = new AbortController();
+        state.abortController = controller;
         try {
-            await streamReply(sessionId, text, card);
+            await streamReply(sessionId, text, card, controller.signal);
             succeeded = true;
         } catch (e) {
             card.progress.hidden = true;
-            card.body.textContent = '本轮处理失败：' + e.message;
-            // 失败给"重试"而不是让用户把问题重打一遍；原文就在手上
-            renderRetryAction(card, text);
+            if (e && e.name === 'AbortError') {
+                // 已收到的片段保留在屏幕上（它们是真的到过的内容），附一句如实的说明：
+                // 服务端约定是"断开后流程照跑并落库"，所以完整回答稍后能从历史里看到，
+                // 这里若假装"已取消"，用户反而找不到刚才那轮的完整回答
+                if (!card.body.textContent) {
+                    card.body.textContent = '（已停止，本轮还没有收到内容）';
+                }
+                var note = document.createElement('div');
+                note.className = 'stopped-note';
+                note.textContent = '已停止接收。本轮会在后台继续完成并保存，稍后刷新可看到完整回答。';
+                card.body.appendChild(note);
+            } else {
+                card.body.textContent = '本轮处理失败：' + e.message;
+                // 失败给"重试"而不是让用户把问题重打一遍；原文就在手上
+                renderRetryAction(card, text);
+            }
         } finally {
+            state.abortController = null;
             state.sending = false;
-            el.send.disabled = false;
+            updateSendButton();
             if (succeeded) {
                 // 答出来了才给点赞/点踩：对一条没答出来的回复收集"满意度"没有意义
                 renderActions(card, card.messageId, null);
@@ -854,8 +1036,13 @@
      * 帧格式与服务端 SseStreamListener 的约定一致：
      *   event: session|state|message|done|error
      *   data:  Result 的 JSON（code/message/data）
+     *
+     * @param sessionId 会话ID
+     * @param text      用户消息
+     * @param card      回答卡片的节点集合
+     * @param signal    中止信号（"停止"按钮触发），可空
      */
-    async function streamReply(sessionId, text, card) {
+    async function streamReply(sessionId, text, card, signal) {
         var resp = await fetch('/api/chat/send', {
             method: 'POST',
             headers: {
@@ -866,7 +1053,8 @@
                 'Accept': 'text/event-stream, application/json',
                 'Authorization': 'Bearer ' + state.token
             },
-            body: JSON.stringify({ sessionId: sessionId, message: text })
+            body: JSON.stringify({ sessionId: sessionId, message: text }),
+            signal: signal
         });
 
         if (resp.status === 401) {
@@ -964,11 +1152,26 @@
 
     /* ==================== 输入框行为 ==================== */
 
-    el.send.addEventListener('click', send);
+    // 发送 / 停止共用一个按钮：回答中按钮显示"停止"，点击掐断本地接收
+    // （服务端会把本轮跑完并落库，说明文案见 sendText 的 AbortError 分支）
+    el.send.addEventListener('click', function () {
+        if (state.sending) {
+            if (state.abortController) { state.abortController.abort(); }
+            return;
+        }
+        send();
+    });
 
     el.input.addEventListener('keydown', function (event) {
+        // 中文输入法的候选词确认也是回车：isComposing / keyCode 229 期间
+        // 按下的是"选字"而不是"发送"。不挡住的话，用拼音打一句话，
+        // 每次确认候选都会把半截话发出去 —— 对这个产品的主要用户群是致命的手感问题
+        if (event.isComposing || event.keyCode === 229) { return; }
         if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();
+            // 回答中按回车：不发送（也不会把"停止"误触出来 —— 停止只认按钮点击，
+            // 否则用户打下一句话按回车，正在生成的回答会被意外掐断）
+            if (state.sending) { return; }
             send();
         }
     });
@@ -988,7 +1191,7 @@
         el.charCount.hidden = !near && !over;
         el.charCount.textContent = over ? (length + ' / 2000（超限，删减后再发）') : (length + ' / 2000');
         el.charCount.className = 'char-count' + (over ? ' over' : (near ? ' near' : ''));
-        el.send.disabled = state.sending || over;
+        updateSendButton();
     }
 
     // 移动端：侧边栏默认隐藏（见 CSS），用顶栏按钮唤起；点主区任意处收回

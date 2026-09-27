@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>小喵 · 运营后台</title>
+    <link rel="icon" href="data:,"><!-- 不请求 favicon，避免控制台一条 404 -->
+    <link rel="stylesheet" href="/assets/app.css">
+    <link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+
+<!-- 登录层：与对话页同一套令牌与登录接口。客服（bob）与管理员（admin）从这里进，
+     客户账号登录后会在前端直接被告知无权限 —— 真正的拦截仍然由服务端完成，
+     这里只是不让人进了门才发现四处都是 403 -->
+<div id="login-layer" class="login-layer">
+    <form id="login-form" class="login-card">
+        <div class="brand-row">
+            <span class="brand-logo">🛠️</span>
+            <div>
+                <div class="brand-title">小喵 · 运营后台</div>
+                <div class="brand-sub"><span class="dot-online"></span> 工单 · 对话记录 · 知识库 · 数据</div>
+            </div>
+        </div>
+        <label class="field">
+            <span>账号</span>
+            <input id="login-username" name="username" autocomplete="username" required>
+        </label>
+        <label class="field">
+            <span>密码</span>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="btn btn-primary" type="submit">进入后台</button>
+        <p class="hint">需要客服或管理员账号（演示：bob / admin，密码 123456）</p>
+        <p id="login-error" class="error-text" hidden></p>
+    </form>
+</div>
+
+<div id="app" class="shell" hidden>
+    <!-- 侧栏：导航。页签按角色显隐（客服只看工单与对话记录，
+         知识库与统计是治理面 —— 这个切分在服务端由 /api/admin/** 的规则强制，这里只是配合） -->
+    <aside class="side">
+        <div class="side-brand">
+            <span class="brand-logo">🛠️</span>
+            <div>
+                <div class="brand-title">运营后台</div>
+                <div class="brand-sub">喵喵优选 · 智能客服</div>
+            </div>
+        </div>
+        <nav id="nav" class="nav">
+            <button class="nav-item" type="button" data-tab="overview" data-roles="3">总览</button>
+            <button class="nav-item" type="button" data-tab="tickets" data-roles="2,3">工单</button>
+            <button class="nav-item" type="button" data-tab="conversations" data-roles="2,3">对话记录</button>
+            <button class="nav-item" type="button" data-tab="knowledge" data-roles="3">知识库</button>
+            <button class="nav-item" type="button" data-tab="flywheel" data-roles="3">待优化清单</button>
+        </nav>
+        <div class="side-foot">
+            <span id="who" class="who"></span>
+            <span id="role-badge" class="role-badge"></span>
+            <a class="link-btn" href="/">对话页</a>
+            <button id="logout" class="link-btn" type="button">退出</button>
+        </div>
+    </aside>
+
+    <main class="work">
+        <!-- ============ 总览（管理员） ============ -->
+        <section id="tab-overview" class="tab" hidden>
+            <div id="overview-cards" class="card-grid"></div>
+            <div class="panel">
+                <h3>近 7 日消息量</h3>
+                <div id="overview-trend" class="trend"></div>
+                <p class="hint">只画有数据的日子；空档日说明那天没有消息。</p>
+            </div>
+            <div class="panel">
+                <h3>待优化问题 Top 10（按命中次数）</h3>
+                <div id="overview-topq" class="topq"></div>
+            </div>
+        </section>
+
+        <!-- ============ 工单（客服+管理员） ============ -->
+        <section id="tab-tickets" class="tab" hidden>
+            <div class="toolbar">
+                <div class="seg" id="ticket-scope">
+                    <button type="button" data-scope="all" class="active">全部工单</button>
+                    <button type="button" data-scope="my">我的工单</button>
+                </div>
+                <select id="ticket-status">
+                    <option value="">全部状态</option>
+                    <option value="0">待处理</option>
+                    <option value="1">处理中</option>
+                    <option value="2">已解决</option>
+                    <option value="3">已关闭</option>
+                </select>
+                <button id="ticket-refresh" class="btn btn-ghost" type="button">刷新</button>
+                <span id="ticket-count" class="hint"></span>
+            </div>
+            <div id="ticket-list" class="ticket-list"></div>
+            <div class="pager">
+                <button id="ticket-prev" type="button">← 上一页</button>
+                <span id="ticket-page-label"></span>
+                <button id="ticket-next" type="button">下一页 →</button>
+            </div>
+        </section>
+
+        <!-- ============ 对话记录（客服+管理员） ============ -->
+        <section id="tab-conversations" class="tab" hidden>
+            <div class="toolbar">
+                <select id="conv-status">
+                    <option value="">全部状态</option>
+                    <option value="1">进行中</option>
+                    <option value="2">已结束</option>
+                    <option value="3">已转人工</option>
+                </select>
+                <button id="conv-refresh" class="btn btn-ghost" type="button">刷新</button>
+                <span class="hint">点击任意一行查看完整对话（这是敏感能力：仅工作需要时查看）</span>
+            </div>
+            <div id="conv-list" class="conv-list"></div>
+            <div class="pager">
+                <button id="conv-prev" type="button">← 上一页</button>
+                <span id="conv-page-label"></span>
+                <button id="conv-next" type="button">下一页 →</button>
+            </div>
+        </section>
+
+        <!-- ============ 知识库（管理员） ============ -->
+        <section id="tab-knowledge" class="tab" hidden>
+            <div class="panel">
+                <h3>录入知识文档</h3>
+                <div class="doc-form">
+                    <label>标题 <input id="doc-title" maxlength="200" placeholder="如：七天无理由退换货规则"></label>
+                    <label>分类 <input id="doc-category" maxlength="64" placeholder="如：售后政策（可留空）"></label>
+                    <label>正文
+                        <textarea id="doc-content" rows="8" placeholder="政策/说明正文。支持从 .txt / .md 文件导入"></textarea>
+                    </label>
+                    <div class="doc-form-actions">
+                        <label class="btn btn-ghost file-btn">📁 导入 .txt / .md
+                            <input id="doc-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+                        </label>
+                        <span id="doc-file-info" class="hint"></span>
+                        <button id="doc-submit" class="btn btn-primary" type="button">入库</button>
+                    </div>
+                </div>
+            </div>
+            <div class="toolbar">
+                <span class="hint">向量化状态为「失败」的文档搜不到语义结果，可用「重建索引」重试</span>
+                <button id="doc-refresh" class="btn btn-ghost" type="button">刷新</button>
+            </div>
+            <div id="doc-list" class="doc-list"></div>
+            <div class="pager">
+                <button id="doc-prev" type="button">← 上一页</button>
+                <span id="doc-page-label"></span>
+                <button id="doc-next" type="button">下一页 →</button>
+            </div>
+        </section>
+
+        <!-- ============ 待优化清单（管理员） ============ -->
+        <section id="tab-flywheel" class="tab" hidden>
+            <div class="toolbar">
+                <span id="flywheel-summary" class="hint"></span>
+                <button id="recluster" class="btn btn-ghost" type="button">立即重算聚类</button>
+            </div>
+            <div id="cluster-list" class="cluster-list"></div>
+        </section>
+    </main>
+</div>
+
+<!-- 通用弹层：对话详情 / 标记已优化 -->
+<div id="modal-mask" class="modal-mask" hidden>
+    <div class="modal">
+        <div class="modal-head">
+            <span id="modal-title"></span>
+            <button id="modal-close" class="icon-btn" type="button">✕</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+    </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/assets/admin.js"></script>
+</body>
+</html>

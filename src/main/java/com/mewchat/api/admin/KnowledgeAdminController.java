@@ -123,8 +123,15 @@ public class KnowledgeAdminController {
     /**
      * 重建单个文档的索引（重新分片并重新向量化）。
      *
+     * <p><b>回执必须把"两步索引"分开说清楚</b>：重建先写 MySQL 切片（关键词索引）、
+     * 再写 Milvus（向量索引），后一步依赖外部服务，未启用或失败时
+     * <b>前一步可能已经修好</b>。一律回"失败，请查看服务端日志"会让运营以为
+     * 操作没生效而反复重试（真容器实测误导过一次），因此与 {@link #create}
+     * 的回执同一口径：按文档落库后的状态说明各部分的下落 ——
+     * 切片数 &gt; 0 即关键词检索可用，向量化部分如实转述 embedError。
+     *
      * @param docId 文档ID
-     * @return 空响应
+     * @return 空响应，message 为面向运营的重建结果说明
      */
     @PostMapping("/documents/{docId}/reindex")
     public Result<Void> reindex(@PathVariable Long docId) {
@@ -134,11 +141,20 @@ public class KnowledgeAdminController {
             return Result.error(ResultCode.NOT_FOUND, "文档不存在：" + docId);
         }
         boolean succeeded = ingestService.reindex(docId);
-        log.info("后台重建文档索引：docId={} 成功={}", docId, succeeded);
-        if (!succeeded) {
+        if (succeeded) {
+            log.info("后台重建文档索引：docId={} 关键词与向量均已更新", docId);
+            return Result.success(null, "重建完成：关键词与向量索引均已更新");
+        }
+        KnowledgeDocument after = documentService.getById(docId);
+        if (after == null || after.getChunkCount() == null || after.getChunkCount() <= 0) {
+            // 切片都没写进去：这是真正的失败，重试同一个按钮也不会有别的结果
+            log.info("后台重建文档索引：docId={} 失败（切片未生成）", docId);
             return Result.error(ResultCode.SYSTEM_ERROR, "重建索引失败，请查看服务端日志");
         }
-        return Result.success();
+        log.info("后台重建文档索引：docId={} 关键词可用（{} 片），向量化未完成",
+                docId, after.getChunkCount());
+        return Result.success(null, "关键词索引已重建（" + after.getChunkCount()
+                + " 片，关键词检索可用），但向量化未完成：" + after.getEmbedError());
     }
 
     /**

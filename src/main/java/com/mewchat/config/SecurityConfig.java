@@ -89,6 +89,7 @@ public class SecurityConfig {
             "/favicon.ico",
             "/",
             "/index.html",
+            "/admin.html",
             "/assets/**"
     };
 

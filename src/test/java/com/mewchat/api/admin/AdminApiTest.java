@@ -379,7 +379,7 @@ class AdminApiTest {
     void adminCanSeeStatsOverview() throws Exception {
         given(statsAssembler.overview()).willReturn(new StatsOverviewView(
                 new StatsOverviewView.ConversationStats(3, 1, 2, 0),
-                new StatsOverviewView.MessageStats(6, 3, 3, new BigDecimal("0.80"), 0, 1200L, 900L),
+                new StatsOverviewView.MessageStats(6, 3, 3, new BigDecimal("0.80"), 0, 1200L, 900L, 2, 1),
                 new StatsOverviewView.TicketStats(1, 1, 0, 0, 0),
                 new StatsOverviewView.KnowledgeStats(2, 8, 0),
                 new StatsOverviewView.FlywheelStats(5, 5, 9),

@@ -57,6 +57,9 @@ public record StatsOverviewView(
      * <p>{@code avgConfidence} 只统计助手消息：用户消息没有置信度这个概念，
      * 把它算进去会让平均值被一堆 0 稀释成一个看着很糟、其实毫无意义的数字。
      *
+     * <p>反馈计数（{@code feedbackUp} / {@code feedbackDown}）只含已反馈的助手消息，
+     * 两者相加不等于助手消息总数 —— 大多数回答用户不会反馈，"没有反馈"也是一种状态。
+     *
      * @param total              消息总数
      * @param userMessages       用户消息数
      * @param assistantMessages  助手消息数
@@ -64,6 +67,8 @@ public record StatsOverviewView(
      * @param lowConfidenceCount 置信度低于兜底线（0.4）的助手消息数
      * @param avgCostMs          助手消息平均耗时（毫秒）
      * @param totalTokens        累计 token 消耗
+     * @param feedbackUp         被点赞（有用）的助手消息数
+     * @param feedbackDown       被点踩（没用）的助手消息数
      */
     public record MessageStats(long total,
                               long userMessages,
@@ -71,7 +76,9 @@ public record StatsOverviewView(
                               BigDecimal avgConfidence,
                               long lowConfidenceCount,
                               Long avgCostMs,
-                              Long totalTokens) {
+                              Long totalTokens,
+                              long feedbackUp,
+                              long feedbackDown) {
     }
 
     /**

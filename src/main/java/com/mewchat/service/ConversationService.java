@@ -172,6 +172,21 @@ public interface ConversationService extends IService<Conversation> {
     void updateTitleIfBlank(String sessionId, String title);
 
     /**
+     * 重命名会话（用户显式改名）。
+     *
+     * <p>与 {@link #updateTitleIfBlank} 的区别：那条路径写的是"程序自己起的标题"，
+     * 为了列表展示做了截断，且只在标题为空时写入；这里是用户的显式输入，
+     * <b>无条件覆盖</b>（改名就是想覆盖），且不做静默截断 —— 超长由接口层的参数校验拒绝，
+     * 不能悄悄改用户的话。
+     *
+     * @param sessionId 会话业务ID
+     * @param userId    当前用户ID
+     * @param title     新标题
+     * @throws com.mewchat.common.exception.BizException 会话不存在或不属于该用户时抛出
+     */
+    void renameSession(String sessionId, Long userId, String title);
+
+    /**
      * 读取挂起的澄清追问。
      *
      * @param sessionId 会话业务ID

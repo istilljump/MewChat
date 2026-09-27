@@ -6,6 +6,7 @@ import com.mewchat.api.chat.dto.ChatMessageView;
 import com.mewchat.api.chat.dto.ChatSendRequest;
 import com.mewchat.api.chat.dto.FeedbackRequest;
 import com.mewchat.api.chat.dto.FeedbackVote;
+import com.mewchat.api.chat.dto.RenameSessionRequest;
 import com.mewchat.api.chat.dto.SessionView;
 import com.mewchat.common.exception.BizException;
 import com.mewchat.common.result.Result;
@@ -34,6 +35,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
@@ -213,6 +215,28 @@ public class ChatController {
     @DeleteMapping("/sessions")
     public Result<Integer> deleteAllSessions(@AuthenticationPrincipal AuthenticatedUser user) {
         return Result.success(cleanupService.deleteAllMine(requireUserId(user)));
+    }
+
+    /**
+     * 重命名一段会话。
+     *
+     * <p>首条用户消息自动充当会话标题（见 {@code ConversationService.updateTitleIfBlank}），
+     * 但自动标题只截取首句，用户往往想给它一个更好认的名字 —— 会话列表一长，
+     * "帮我看看这个订单…"这种开头相似的历史根本扫不出区别。
+     * 改名后自动标题不再覆盖（那条路径只写空标题）。
+     *
+     * @param sessionId 会话业务ID
+     * @param request   新标题
+     * @param user      当前登录用户
+     * @return 空结果（前端以本地状态更新列表，不必回读）
+     * @throws BizException 会话不存在或不属于当前用户时抛出（两种情况同一句提示）
+     */
+    @PutMapping("/session/{sessionId}/title")
+    public Result<Void> renameSession(@PathVariable String sessionId,
+                                      @Valid @RequestBody RenameSessionRequest request,
+                                      @AuthenticationPrincipal AuthenticatedUser user) {
+        conversationService.renameSession(sessionId, requireUserId(user), request.title());
+        return Result.success(null);
     }
 
     /**

@@ -1,0 +1,352 @@
+/* ============================================================================
+ * 小喵 · 运营后台样式。
+ *
+ * 设计语言与对话页（app.css）同源：米黄纸底、3px 纯黑描边、硬阴影、橙色主色。
+ * app.css 提供 token（--ink/--panel/--accent…）与登录卡、按钮等公共件，
+ * 这里只写后台特有的布局：侧栏导航、面板、表格化列表、徽标与弹层。
+ * ========================================================================= */
+
+.shell {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    min-height: 100vh;
+}
+
+/* ---- 侧栏 ---- */
+
+.side {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border-right: var(--border);
+}
+
+.side-brand {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 16px 14px;
+    border-bottom: var(--border);
+}
+
+.brand-logo { font-size: 26px; }
+.brand-title { font-weight: 800; }
+.brand-sub { font-size: 12px; color: var(--muted); }
+
+.nav { flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+
+.nav-item {
+    font: inherit;
+    text-align: left;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 2px solid transparent;
+    cursor: pointer;
+}
+
+.nav-item:hover { border-color: var(--ink); }
+.nav-item.active { background: var(--accent); border-color: var(--ink); box-shadow: 3px 3px 0 var(--ink); font-weight: 700; }
+
+.side-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-top: var(--border);
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.who { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; color: var(--ink); }
+
+.role-badge {
+    padding: 1px 8px;
+    font-size: 12px;
+    border: 2px solid var(--ink);
+    background: #fff2d8;
+}
+
+/* ---- 主工作区 ---- */
+
+.work { padding: 22px 26px; overflow-x: hidden; }
+.tab > .toolbar:first-child { margin-top: 0; }
+
+.panel {
+    margin-bottom: 20px;
+    padding: 16px 18px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 4px 4px 0 var(--ink);
+}
+
+.panel h3 { margin: 0 0 12px; font-size: 15px; }
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 4px 0 16px;
+    flex-wrap: wrap;
+}
+
+.toolbar select {
+    font: inherit;
+    padding: 6px 10px;
+    background: var(--panel);
+    border: 2px solid var(--ink);
+}
+
+.toolbar .hint { flex: 1; }
+
+/* 分段切换（全部 / 我的） */
+.seg { display: inline-flex; border: 2px solid var(--ink); box-shadow: 3px 3px 0 var(--ink); }
+.seg button {
+    font: inherit;
+    padding: 7px 14px;
+    background: var(--panel);
+    border: none;
+    cursor: pointer;
+}
+.seg button + button { border-left: 2px solid var(--ink); }
+.seg button.active { background: var(--accent); font-weight: 700; }
+
+/* ---- 总览 ---- */
+
+.card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.stat-card {
+    padding: 12px 14px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 4px 4px 0 var(--ink);
+}
+
+.stat-card h4 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: var(--muted);
+    border-bottom: 2px dashed #d9cfb8;
+    padding-bottom: 6px;
+}
+
+.stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+.stat-row b { font-size: 14px; }
+
+.stat-row .warn { color: var(--danger); font-weight: 700; }
+
+/* 纯 CSS 柱状趋势图：不引图表库 —— 总览只画 7 根柱子，一个库的体积与安全面都不值 */
+.trend { display: flex; align-items: flex-end; gap: 10px; height: 130px; padding: 6px 4px 0; }
+.trend .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }
+.trend .bar {
+    width: 70%;
+    background: var(--accent);
+    border: 2px solid var(--ink);
+    min-height: 3px;
+}
+.trend .bar-num { font-size: 12px; font-weight: 700; }
+.trend .bar-day { font-size: 11px; color: var(--muted); }
+.trend .empty-hint { color: var(--muted); font-size: 13px; }
+
+.topq { display: flex; flex-direction: column; gap: 6px; }
+.topq-item {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    font-size: 13px;
+    padding: 6px 8px;
+    background: #fffdf4;
+    border: 1px solid #d9cfb8;
+}
+.topq-item .hits { flex: none; font-weight: 700; color: var(--accent-deep); }
+.topq-item .q { flex: 1; word-break: break-all; }
+
+/* ---- 工单 ---- */
+
+.ticket-list, .conv-list, .cluster-list { display: flex; flex-direction: column; gap: 12px; }
+
+.ticket-card {
+    padding: 12px 14px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 3px 3px 0 var(--ink);
+}
+
+.ticket-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ticket-head .tid { font-size: 12px; color: var(--muted); font-weight: 700; }
+.ticket-head .spacer { flex: 1; }
+.ticket-desc { margin: 8px 0; font-size: 14px; word-break: break-all; }
+.ticket-foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.ticket-foot .link-btn { font-size: 12px; }
+
+.badge {
+    display: inline-block;
+    padding: 1px 8px;
+    font-size: 12px;
+    border: 2px solid var(--ink);
+    background: var(--panel);
+}
+
+.badge.s0 { background: #ffe3e3; border-color: var(--danger); color: var(--danger); font-weight: 700; } /* 待处理 */
+.badge.s1 { background: #fff2d8; font-weight: 700; }                                                   /* 处理中 */
+.badge.s2 { background: #e2f4e2; }                                                                     /* 已解决 */
+.badge.s3 { background: #eee; color: var(--muted); }                                                   /* 已关闭 */
+
+/* ---- 对话记录 ---- */
+
+.conv-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 3px 3px 0 var(--ink);
+    cursor: pointer;
+    flex-wrap: wrap;
+}
+
+.conv-row:hover { background: #fff7e6; }
+.conv-row .title { flex: 1; min-width: 180px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-row .meta { font-size: 12px; color: var(--muted); }
+.conv-row .sid { font-size: 11px; color: var(--muted); font-family: Consolas, Menlo, monospace; }
+
+/* ---- 知识库 ---- */
+
+.doc-form label { display: block; font-size: 13px; margin-bottom: 10px; }
+.doc-form input, .doc-form textarea {
+    width: 100%;
+    font: inherit;
+    margin-top: 4px;
+    padding: 8px 10px;
+    border: 2px solid var(--ink);
+    background: #fff;
+}
+.doc-form-actions { display: flex; align-items: center; gap: 12px; }
+.file-btn { display: inline-flex; align-items: center; cursor: pointer; margin-bottom: 0 !important; }
+
+.doc-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 3px 3px 0 var(--ink);
+    flex-wrap: wrap;
+}
+
+.doc-row .title { flex: 1; min-width: 200px; font-weight: 700; word-break: break-all; }
+.doc-row .meta { font-size: 12px; color: var(--muted); }
+
+.badge.k2 { background: #e2f4e2; }      /* 已入库 */
+.badge.k0, .badge.k1 { background: #fff2d8; } /* 待处理 / 处理中 */
+.badge.k3 { background: #ffe3e3; border-color: var(--danger); color: var(--danger); font-weight: 700; } /* 失败 */
+
+/* ---- 待优化清单 ---- */
+
+.cluster-card {
+    padding: 14px 16px;
+    background: var(--panel);
+    border: var(--border);
+    box-shadow: 4px 4px 0 var(--ink);
+}
+
+.cluster-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.cluster-q { flex: 1; min-width: 220px; font-weight: 800; word-break: break-all; }
+.cluster-meta { font-size: 12px; color: var(--muted); }
+.cluster-actions { display: flex; gap: 10px; margin-top: 10px; }
+
+.member-list { margin: 12px 0 0; border-top: 2px dashed #d9cfb8; padding-top: 10px; display: none; }
+.member-list.open { display: block; }
+.member-row { display: flex; gap: 10px; align-items: center; padding: 5px 0; font-size: 13px; flex-wrap: wrap; }
+.member-row .q { flex: 1; min-width: 200px; word-break: break-all; }
+.member-row .hits { color: var(--muted); font-size: 12px; }
+.member-row.done .q { color: var(--muted); text-decoration: line-through; }
+
+/* ---- 分页 ---- */
+
+.pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 16px 0 6px; }
+.pager button {
+    font: inherit;
+    padding: 6px 14px;
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    box-shadow: 2px 2px 0 var(--ink);
+    cursor: pointer;
+}
+.pager button:disabled { opacity: .4; cursor: default; box-shadow: none; }
+.pager span { font-size: 13px; color: var(--muted); }
+
+/* ---- 弹层 ---- */
+
+.modal-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(27, 27, 27, .45);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 6vh 16px;
+}
+
+.modal {
+    width: min(760px, 100%);
+    max-height: 84vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--paper);
+    border: var(--border);
+    box-shadow: 8px 8px 0 rgba(0, 0, 0, .35);
+}
+
+.modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: var(--border);
+    background: var(--accent);
+    font-weight: 800;
+}
+
+.modal-body { padding: 16px; overflow-y: auto; }
+
+/* 对话详情里的消息：复用对话页的气泡观感，但尺寸收紧 */
+.modal-body .dm { display: flex; margin-bottom: 12px; }
+.modal-body .dm.user { justify-content: flex-end; }
+.modal-body .dm-bubble {
+    max-width: 80%;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 14px;
+}
+.modal-body .dm.user .dm-bubble { background: var(--user-bubble); }
+.modal-body .dm-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.modal-body .dm-meta .err { color: var(--danger); font-weight: 700; }
+
+/* 标记已优化的表单 */
+.optimize-form label { display: block; font-size: 13px; margin: 10px 0; }
+.optimize-form select { width: 100%; font: inherit; padding: 8px; border: 2px solid var(--ink); background: #fff; }
+.optimize-form .hint { margin-top: 8px; }
+
+/* 空状态与加载提示 */
+.empty-hint { color: var(--muted); text-align: center; padding: 26px 0; }
+
+/* 窄屏：侧栏收成顶栏下的横向页签 */
+@media (max-width: 780px) {
+    .shell { grid-template-columns: 1fr; }
+    .side { flex-direction: column; border-right: none; border-bottom: var(--border); }
+    .nav { flex-direction: row; flex-wrap: wrap; }
+    .nav-item.active { box-shadow: 2px 2px 0 var(--ink); }
+    .work { padding: 16px 14px; }
+}

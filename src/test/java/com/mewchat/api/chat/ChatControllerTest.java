@@ -36,14 +36,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willAnswer;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
@@ -469,6 +472,24 @@ class ChatControllerTest {
     }
 
     /**
+     * 后台页与对话页同一条放行规矩：骨架免认证可访问，数据接口逐个鉴权。
+     *
+     * <p>后台页的价值恰恰依赖这条：客服/管理员第一次打开 /admin.html 时还没有令牌，
+     * 若页面本身要求认证，他们看到的是 401 JSON 而不是登录表单。
+     */
+    @Test
+    void adminFrontendShouldBeServedWithoutAuthentication() throws Exception {
+        mockMvc.perform(get("/admin.html"))
+                .andExpect(status().isOk())
+                // ASCII 特征串，理由同上（响应体可能按 ISO-8859-1 解码）
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"login-form\"")));
+
+        mockMvc.perform(get("/assets/admin.js"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("/api/admin/")));
+    }
+
+    /**
      * 静态资源放行不能顺手把数据接口也放开：无令牌访问业务接口仍然必须是 401。
      *
      * <p>与上面那条配对存在：将来若有人把放行清单写成 {@code /**} 之类的宽规则，
@@ -612,6 +633,83 @@ class ChatControllerTest {
                 .andExpect(jsonPath("$.data").value(7));
 
         verify(cleanupService).deleteAllMine(USER_ID);
+    }
+
+    /* ==================== 会话重命名 ==================== */
+
+    /**
+     * 重命名接口要把"令牌里的用户"与"新标题"原样交给服务层。
+     *
+     * <p>归属校验在服务层（getOwnedBySessionId 的口径：不存在与不属于同一句话），
+     * 接口层只负责把请求交对 —— 用 verify 钉住，防止有人在这里把 userId 写死或漏传。
+     */
+    @Test
+    void renameSessionShouldPassTokenUserAndTitle() throws Exception {
+        mockMvc.perform(put("/api/chat/session/{sessionId}/title", SESSION_ID)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"退货进度查询\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        verify(conversationService).renameSession(SESSION_ID, USER_ID, "退货进度查询");
+    }
+
+    @Test
+    void renameSessionWithoutTokenShouldBeRejected() throws Exception {
+        mockMvc.perform(put("/api/chat/session/{sessionId}/title", SESSION_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"x\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(20001));
+
+        verify(conversationService, never()).renameSession(anyString(), anyLong(), anyString());
+    }
+
+    /**
+     * 空白标题与超长标题都是参数错误（10001），不该进服务层。
+     *
+     * <p>重命名刻意<b>不做静默截断</b>（与首句自动标题的截断是两条路径）：
+     * 用户显式输入被悄悄改掉比报错更糟，所以超限如实拒绝。
+     */
+    @Test
+    void renameSessionWithBlankOrOverlongTitleShouldBeRejected() throws Exception {
+        mockMvc.perform(put("/api/chat/session/{sessionId}/title", SESSION_ID)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"   \"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(10001))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("标题")));
+
+        mockMvc.perform(put("/api/chat/session/{sessionId}/title", SESSION_ID)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"" + "长".repeat(101) + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(10001))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("100")));
+
+        verify(conversationService, never()).renameSession(anyString(), anyLong(), anyString());
+    }
+
+    /**
+     * 改别人的会话被拒时，错误口径必须是"会话不存在或无权访问"——
+     * 与历史接口同一句话，不透露"这个会话ID确实存在"。
+     */
+    @Test
+    void renameSessionOfForeignSessionShouldUseUnifiedDenialMessage() throws Exception {
+        willThrow(new BizException(ResultCode.FORBIDDEN,
+                com.mewchat.service.ConversationService.SESSION_UNAVAILABLE_MESSAGE))
+                .given(conversationService).renameSession(eq(SESSION_ID), eq(USER_ID), anyString());
+
+        mockMvc.perform(put("/api/chat/session/{sessionId}/title", SESSION_ID)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + validToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"抢名\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(20002))
+                .andExpect(jsonPath("$.message").value("会话不存在或无权访问"));
     }
 
     /**

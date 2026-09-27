@@ -275,7 +275,9 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
 /* ---- 消息 ---- */
 
 .msg { display: flex; margin-bottom: 18px; }
-.msg.user { justify-content: flex-end; }
+/* 用户消息纵向排：气泡在上、时间在正下方靠右。
+   不改的话两个子元素会被默认的横排挤到气泡右侧，时间与气泡重叠还容易贴出屏幕 */
+.msg.user { flex-direction: column; align-items: flex-end; }
 
 .bubble-user {
     max-width: 62%;
@@ -434,6 +436,54 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
     font-size: 14px;
 }
 
+/* ---- 阶段21：重命名 / 停止 / 时间戳 ---- */
+
+/* 重命名入口：与删除按钮同一套"悬停出现"的规矩，位置在删除左侧 */
+.session-rename {
+    position: absolute;
+    top: 6px;
+    right: 30px;
+    padding: 0 6px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .1s ease;
+}
+
+.session-item:hover .session-rename,
+.session-rename:focus { opacity: 1; }
+
+/* 行内重命名输入框：替换标题的位置，宽度撑满列表项 */
+.rename-input {
+    width: 100%;
+    font: inherit;
+    font-size: 14px;
+    padding: 2px 4px;
+    border: 2px solid var(--ink);
+    background: #fff;
+}
+
+/* 停止后留在卡片上的说明：弱化但不隐藏 —— 后台还会完成并落库这件事用户必须知道 */
+.stopped-note {
+    margin-top: 8px;
+    padding: 6px 8px;
+    font-size: 12px;
+    color: var(--muted);
+    background: #fff7e6;
+    border: 2px dashed var(--accent-deep);
+}
+
+/* 消息时间：跟随气泡/卡片，弱于正文 */
+.bubble-time { margin-top: 4px; font-size: 12px; color: var(--muted); text-align: right; }
+
+/* 发送按钮的"停止"态：换红底，提示这里不再是"发送" */
+.composer .btn-primary.sending { background: var(--danger); }
+
 @media (max-width: 720px) {
     .app { grid-template-columns: 1fr; }
     .menu-toggle { display: inline-block; }
@@ -458,5 +508,5 @@ input:focus, textarea:focus { box-shadow: var(--shadow); }
 
 /* 触屏设备没有 hover：删除按钮必须常显，否则点了也没入口 */
 @media (hover: none) {
-    .session-del { opacity: 1; }
+    .session-del, .session-rename { opacity: 1; }
 }

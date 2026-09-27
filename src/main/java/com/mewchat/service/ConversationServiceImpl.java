@@ -235,6 +235,24 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
                 .update();
     }
 
+    @Override
+    public void renameSession(String sessionId, Long userId, String title) {
+        // 复用"不存在与不属于同一口径"的查询：重命名一个不存在的会话ID，
+        // 响应必须与"重命名别人的会话"完全一致（不透露存在性，见 getOwnedBySessionId 的说明）。
+        // 刻意不用 resolveOwnedSession：那会把"不存在的会话"直接建出来 ——
+        // 改名不该有"顺手建一个空会话"这种副作用
+        Conversation owned = getOwnedBySessionId(sessionId, userId);
+        if (owned == null) {
+            throw new BizException(ResultCode.FORBIDDEN, SESSION_UNAVAILABLE_MESSAGE);
+        }
+        lambdaUpdate()
+                .eq(Conversation::getId, owned.getId())
+                // 归一化与首句标题同口径（压掉连续空白），但不追加省略号：
+                // 这里写的是用户显式输入的标题，长度上限由接口层校验（列宽 VARCHAR(100)）
+                .set(Conversation::getTitle, title.trim().replaceAll("\\s+", " "))
+                .update();
+    }
+
     /**
      * 截断标题到列宽以内（{@code title} 为 VARCHAR(100)）。
      *
