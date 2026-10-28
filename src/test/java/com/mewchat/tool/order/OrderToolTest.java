@@ -1,5 +1,6 @@
 package com.mewchat.tool.order;
 
+import com.mewchat.support.BusinessDataStub;
 import com.mewchat.tool.ToolResult;
 import org.junit.jupiter.api.Test;
 
@@ -16,11 +17,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 后两条是客服场景里最常见的两种输入，也最容易实现成"返回失败" ——
  * 那种实现下用户会被告知"系统忙、建议转人工"，而实际上缺的只是核对一下单号。
  *
+ * <p>数据来自 {@link BusinessDataStub}（与种子脚本同一份值），工具逻辑本身
+ * 与数据库无关，因此单测不需要 Spring。
+ *
  * @author MewChat
  */
 class OrderToolTest {
 
-    private final OrderTool orderTool = new OrderTool();
+    private final OrderTool orderTool = new OrderTool(BusinessDataStub.of());
 
     /**
      * 工具名必须与编排侧引用的常量一致，否则调用时报"未注册的工具"。

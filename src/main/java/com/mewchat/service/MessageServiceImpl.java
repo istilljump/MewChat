@@ -166,4 +166,30 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
         // （用于日志与调用方的统计），remove 只回布尔值
         return baseMapper.delete(Wrappers.<Message>lambdaQuery().in(Message::getSessionId, sessionIds));
     }
+
+    @Override
+    public Page<Message> pageByFeedback(int feedback, long page, long size) {
+        // 只按反馈值筛 + 反馈时间倒序：运营关心的是"最近用户在踩什么"
+        return page(new Page<>(page, size), Wrappers.<Message>lambdaQuery()
+                .eq(Message::getFeedback, feedback)
+                .orderByDesc(Message::getFeedbackTime));
+    }
+
+    @Override
+    public Message findPrecedingUserMessage(Message assistantMessage) {
+        if (assistantMessage == null || !StringUtils.hasText(assistantMessage.getSessionId())) {
+            return null;
+        }
+        try {
+            return getOne(Wrappers.<Message>lambdaQuery()
+                    .eq(Message::getSessionId, assistantMessage.getSessionId())
+                    .eq(Message::getRole, ChatConstants.ROLE_USER)
+                    .lt(Message::getId, assistantMessage.getId())
+                    .orderByDesc(Message::getId)
+                    .last("LIMIT 1"), false);
+        } catch (Exception e) {
+            log.warn("取提问原文失败（不影响看板展示）：messageId={}", assistantMessage.getId(), e);
+            return null;
+        }
+    }
 }

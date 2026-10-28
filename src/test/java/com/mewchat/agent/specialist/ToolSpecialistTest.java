@@ -3,6 +3,7 @@ package com.mewchat.agent.specialist;
 import com.mewchat.agent.ChatContext;
 import com.mewchat.agent.ChatState;
 import com.mewchat.agent.IntentType;
+import com.mewchat.config.AgentProperties;
 import com.mewchat.dao.mysql.entity.PendingClarification;
 import com.mewchat.service.ConversationService;
 import com.mewchat.tool.BusinessToolInvoker;
@@ -12,6 +13,11 @@ import com.mewchat.tool.logistics.LogisticsTool;
 import com.mewchat.tool.order.OrderTool;
 import com.mewchat.tool.product.ProductTool;
 import com.mewchat.tool.refund.RefundTool;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -66,7 +72,8 @@ class ToolSpecialistTest {
     void setUp() {
         recordingInvoker = new RecordingToolInvoker(realInvoker());
         conversationService = mock(ConversationService.class);
-        specialist = new ToolSpecialist(providerOf(recordingInvoker), conversationService);
+        specialist = new ToolSpecialist(providerOf(recordingInvoker), conversationService,
+                disabledModelCalling());
     }
 
     @AfterAll
@@ -232,7 +239,8 @@ class ToolSpecialistTest {
                 return "phone";
             }
         };
-        ToolSpecialist declaring = new ToolSpecialist(providerOf(declaringInvoker), conversationService);
+        ToolSpecialist declaring = new ToolSpecialist(providerOf(declaringInvoker), conversationService,
+                disabledModelCalling());
 
         declaring.execute(contextOf(IntentType.PRODUCT_QUERY, Map.of()));
 
@@ -292,7 +300,8 @@ class ToolSpecialistTest {
      */
     @Test
     void unavailableToolServiceShouldDegradeNotThrow() {
-        ToolSpecialist withoutTools = new ToolSpecialist(providerThrowing(), conversationService);
+        ToolSpecialist withoutTools = new ToolSpecialist(providerThrowing(), conversationService,
+                disabledModelCalling());
 
         ChatContext context = orderContext("MC202409240001");
         ChatState next = withoutTools.execute(context);
@@ -307,7 +316,8 @@ class ToolSpecialistTest {
      */
     @Test
     void unavailableToolServiceShouldStillAskForTheMissingParam() {
-        ToolSpecialist withoutTools = new ToolSpecialist(providerThrowing(), conversationService);
+        ToolSpecialist withoutTools = new ToolSpecialist(providerThrowing(), conversationService,
+                disabledModelCalling());
 
         ChatContext context = contextOf(IntentType.ORDER_QUERY, Map.of());
         withoutTools.execute(context);
@@ -326,7 +336,7 @@ class ToolSpecialistTest {
         ToolSpecialist withBrokenTool = new ToolSpecialist(
                 providerOf((toolName, params) -> {
                     throw new IllegalStateException("模拟下游超时");
-                }), conversationService);
+                }), conversationService, disabledModelCalling());
 
         ChatContext context = orderContext("MC202409240001");
         ChatState next = withBrokenTool.execute(context);
@@ -350,7 +360,189 @@ class ToolSpecialistTest {
         assertThat(recordingInvoker.calls).isEmpty();
     }
 
+    /* ==================== 模型自主选工具（Function Calling） ==================== */
+
+    /**
+     * 模型可以不按意图路由选工具：意图是订单查询，但模型判断该先查商品也能成立。
+     *
+     * <p>这正是模型路径与查表路径的本质差异 —— 查表路径"意图决定工具"是硬编码的，
+     * 模型路径由模型依据用户原话自行决定。断言的锚点是结果：工具真的被调了、
+     * 查到的事实进了 ToolResult、置信度按确定性查询给满分。
+     */
+    @Test
+    void modelModeShouldLetModelChooseTheTool() {
+        ToolSpecialist modelSpecialist = specialistWithModel(
+                response(aiWithTools(toolCall(ProductTool.NAME, "{\"productName\":\"耳机\"}"))),
+                response(textSummary("商品已查到。")));
+        ChatContext context = contextOf(IntentType.ORDER_QUERY, Map.of());
+
+        ChatState next = modelSpecialist.execute(context);
+
+        assertThat(next).isEqualTo(ChatState.CONFIDENCE_CHECK);
+        assertThat(recordingInvoker.calls).containsExactly(ProductTool.NAME);
+        assertThat(context.getToolResult().isSuccess()).isTrue();
+        assertThat(context.getToolResult().getToolName()).isEqualTo(ProductTool.NAME);
+        assertThat(context.getToolResult().getSummary()).isEqualTo("商品已查到。");
+        assertThat(context.getAnswerConfidence()).isEqualByComparingTo(BigDecimal.ONE);
+    }
+
+    /**
+     * 模型一轮里组合调用多个工具时，结果聚合为一条成功的 ToolResult。
+     */
+    @Test
+    void modelModeShouldAggregateMultipleToolCalls() {
+        ToolSpecialist modelSpecialist = specialistWithModel(
+                response(aiWithTools(
+                        toolCall(OrderTool.NAME, "{\"orderNo\":\"MC202409240001\"}"),
+                        toolCall(ProductTool.NAME, "{\"productName\":\"耳机\"}"))),
+                response(textSummary("订单与商品都已查到。")));
+        ChatContext context = contextOf(IntentType.ORDER_QUERY, Map.of());
+
+        modelSpecialist.execute(context);
+
+        assertThat(recordingInvoker.calls).contains(OrderTool.NAME, ProductTool.NAME);
+        assertThat(context.getToolResult().isSuccess()).isTrue();
+        assertThat(context.getToolResult().getToolName())
+                .isEqualTo(OrderTool.NAME + "+" + ProductTool.NAME);
+        assertThat(context.getToolResult().getSummary()).isEqualTo("订单与商品都已查到。");
+    }
+
+    /**
+     * 模型不调用任何工具（直接凭空作答）时必须降级回查表路径：
+     * 没有工具结果的"回答"不可信，宁可走确定的意图查表。
+     */
+    @Test
+    void modelModeShouldFallBackToTableWhenModelSkipsTools() {
+        ToolSpecialist modelSpecialist = specialistWithModel(
+                response(textSummary("我觉得您的订单应该已经发货了。")));
+        ChatContext context = orderContext("MC202409240001");
+
+        ChatState next = modelSpecialist.execute(context);
+
+        assertThat(next).isEqualTo(ChatState.CONFIDENCE_CHECK);
+        assertThat(recordingInvoker.calls).as("应降级为查表路径").containsExactly(OrderTool.NAME);
+        assertThat(context.getToolResult().isSuccess()).isTrue();
+        assertThat(context.getToolResult().getSummary()).contains("已发货");
+    }
+
+    /**
+     * 模型到轮数上限仍在要求继续调工具（没收敛）时，放弃模型路径降级查表。
+     */
+    @Test
+    void modelModeShouldFallBackWhenRoundsExhausted() {
+        ToolSpecialist modelSpecialist = specialistWithModel(
+                response(aiWithTools(toolCall(OrderTool.NAME, "{\"orderNo\":\"MC202409240001\"}"))),
+                response(aiWithTools(toolCall(OrderTool.NAME, "{\"orderNo\":\"MC202409240001\"}"))),
+                response(aiWithTools(toolCall(OrderTool.NAME, "{\"orderNo\":\"MC202409240001\"}"))));
+        ChatContext context = orderContext("MC202409240001");
+
+        modelSpecialist.execute(context);
+
+        assertThat(context.getToolResult().getToolName())
+                .as("降级后走查表路径，工具名是意图映射的那个")
+                .isEqualTo(OrderTool.NAME);
+        assertThat(context.getToolResult().isSuccess()).isTrue();
+    }
+
+    /**
+     * 模型路径查到"缺参数"时同样走追问 + 列候选（两条路径共享追问逻辑）。
+     */
+    @Test
+    void modelModeShouldAskClarificationWhenToolNeedsMoreInfo() {
+        ToolSpecialist modelSpecialist = specialistWithModel(
+                response(aiWithTools(toolCall(OrderTool.NAME, "{}"))),
+                response(textSummary("工具提示缺少订单号。")));
+        ChatContext context = contextOf(IntentType.ORDER_QUERY, Map.of());
+
+        modelSpecialist.execute(context);
+
+        assertThat(context.getToolResult().needsClarification()).isTrue();
+        assertThat(context.getClarificationHint())
+                .as("追问要列出候选，而不是干问")
+                .contains("MC202409240001");
+        assertThat(capturedPending().getMissingParam())
+                .as("候选项要填进订单工具自己声明的 orderNo")
+                .isEqualTo("orderNo");
+        assertThat(context.getAnswerConfidence()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
     /* ==================== 辅助 ==================== */
+
+    /**
+     * 构造一个"模型模式已启用"的专家节点，模型按给定响应顺序回放。
+     *
+     * @param responses 模型响应序列（超出后重复最后一个）
+     * @return 专家节点
+     */
+    private ToolSpecialist specialistWithModel(ChatResponse... responses) {
+        AgentProperties properties = new AgentProperties();
+        properties.setModelToolCalling(true);
+        ModelToolCallingService service = new ModelToolCallingService(
+                providerOfChatModel(scriptedModel(responses)),
+                providerOf(recordingInvoker), properties);
+        return new ToolSpecialist(providerOf(recordingInvoker), conversationService, service);
+    }
+
+    /** 关闭模型模式的默认服务：构造签名要求这个参数，但行为与旧版完全一致 */
+    private static ModelToolCallingService disabledModelCalling() {
+        return new ModelToolCallingService(null, null, new AgentProperties());
+    }
+
+    /** 按顺序回放响应的替身模型（超出序列后重复最后一个） */
+    private static ChatModel scriptedModel(ChatResponse... responses) {
+        return new ChatModel() {
+            private int index;
+
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                return responses[Math.min(index++, responses.length - 1)];
+            }
+        };
+    }
+
+    private static ObjectProvider<ChatModel> providerOfChatModel(ChatModel model) {
+        return new ObjectProvider<>() {
+            @Override
+            public ChatModel getObject() {
+                return model;
+            }
+
+            @Override
+            public ChatModel getIfAvailable() {
+                return model;
+            }
+
+            @Override
+            public Iterator<ChatModel> iterator() {
+                return List.of(model).iterator();
+            }
+        };
+    }
+
+    private static ChatResponse response(AiMessage aiMessage) {
+        return ChatResponse.builder().aiMessage(aiMessage).build();
+    }
+
+    /** 纯文本响应（模型没调工具） */
+    private static AiMessage textSummary(String text) {
+        return AiMessage.from(text);
+    }
+
+    /** 构造一个模型发出的工具调用请求 */
+    private static ToolExecutionRequest toolCall(String toolName, String arguments) {
+        return ToolExecutionRequest.builder()
+                .id("req-" + toolName + '-' + arguments.hashCode())
+                .name(toolName)
+                .arguments(arguments)
+                .build();
+    }
+
+    /** 携带工具调用请求的模型响应 */
+    private static AiMessage aiWithTools(ToolExecutionRequest... requests) {
+        return AiMessage.from(requests);
+    }
+
+    /* ==================== （原）辅助 ==================== */
 
     /**
      * 取出写入的挂起状态。
@@ -403,6 +595,10 @@ class ToolSpecialistTest {
     private static synchronized ToolInvoker realInvoker() {
         if (toolContext == null) {
             toolContext = new AnnotationConfigApplicationContext();
+            // 工具已改为经 service 取数：上下文里注册内存桩（与种子数据同一份值），
+            // 保持"不依赖数据库"的测试前提
+            toolContext.registerBean(com.mewchat.service.BusinessDataService.class,
+                    com.mewchat.support.BusinessDataStub::of);
             toolContext.register(OrderTool.class, LogisticsTool.class, RefundTool.class,
                     ProductTool.class, BusinessToolInvoker.class);
             toolContext.refresh();
@@ -499,6 +695,13 @@ class ToolSpecialistTest {
             // 于是"物流候选该填 orderNo 而不是 trackingNo"这条就测不出来了
             // （替身返回 null → 退化分支 → 填成第一个缺失参数 trackingNo）
             return delegate.clarificationParam(toolName);
+        }
+
+        @Override
+        public List<Object> toolContractObjects() {
+            // 同理必须转发：模型选工具路径要从这里拿 @Tool 契约，
+            // 漏掉它会让"模型模式"在测试里永远走降级分支而不是被测到
+            return delegate.toolContractObjects();
         }
     }
 }

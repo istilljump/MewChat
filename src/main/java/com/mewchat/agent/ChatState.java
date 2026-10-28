@@ -33,16 +33,24 @@ import java.util.Set;
  *                     │  ▲                                │       │
  *        （0.4~0.7）──┘  └──二次检索───────────┐          │       │
  *                     │                       │          │       │
- *            ┌────────┴────────┐              │          │       │
- *            ▼                 ▼              │          ▼       │
- *          REPLY           FALLBACK           └──────────┘       │
- *            │  ▲              │                                 │
- *            │  └──生成失败────┘                                 │
- *            │                 │                                 │
- *            └────────┬────────┘                                 │
- *                     ▼                                          │
+ *            ┌────────┴────────┐              │          ▼       │
+ *            ▼                 ▼              │      AGGREGATE    │
+ *          REPLY           FALLBACK           └──────────┘  │  │
+ *            │  ▲              │                             │  │
+ *            │  └──生成失败────┘                （多意图）◀──┘  │
+ *            │                 │                    ┌─ 还有子意图 ─▶ ROUTE
+ *            └────────┬────────┘                    └─ 没有了 ────▶ END
+ *                     ▼
  *                    END  ◀──────────────────────────────────────┘
  * </pre>
+ *
+ * <p><b>AGGREGATE 与那个受控环</b>：多意图模式（默认关闭）下一句话里拆出的多个子意图
+ * 要逐条执行，REPLY/CLARIFY/FALLBACK 产出一段后先到 AGGREGATE 聚合，
+ * 还有剩余子意图就回到 ROUTE 处理下一条 —— REPLY ─▶ AGGREGATE ─▶ ROUTE
+ * 构成本状态机里<b>第二个受控环</b>，圈数被两件事夹住：
+ * 子意图队列在意图识别时就被 {@code multi-intent-max-sub-intents} 封顶，
+ * 外层还有 max-steps 兜住整个流程。单意图轮 AGGREGATE 不可达，
+ * 三个产出节点直接走原有的 END 边。
  *
  * <p>每次转移都会经 {@link #canTransitionTo(ChatState)} 校验，
  * 节点若返回了未声明的后继状态会立即抛异常，把编排错误暴露在开发阶段，
@@ -109,6 +117,15 @@ public enum ChatState {
     /** 兜底：知识库与工具都给不出可靠答案时的降级处理（转人工 + 建工单） */
     FALLBACK("兜底处理"),
 
+    /**
+     * 聚合回复：多意图轮把已完成的各段回复拼成一条最终回复。
+     *
+     * <p>还有剩余子意图则回到 {@link #ROUTE} 处理下一条（受控环，见类注释），
+     * 没有了则拼接各段、按最差段确定本轮终态并结束。
+     * 单意图轮不会进入本状态。
+     */
+    AGGREGATE("聚合回复"),
+
     /** 流程结束 */
     END("结束");
 
@@ -136,11 +153,17 @@ public enum ChatState {
         TRANSITIONS.put(CONFIDENCE_CHECK, EnumSet.of(REPLY, FALLBACK, CLARIFY, RAG_RETRIEVE));
         // 追问/拒答/回复/兜底都是一次交互的终点：要返回给用户的内容已经确定。
         // REPLY 额外允许转到 FALLBACK：文本生成本身失败（模型限流、超时）时，
-        // 应该降级为兜底话术，而不是把异常抛给用户
-        TRANSITIONS.put(CLARIFY, EnumSet.of(END));
+        // 应该降级为兜底话术，而不是把异常抛给用户。
+        // 三者都额外允许转到 AGGREGATE：多意图轮里它们只是一段的终点，
+        // 聚合节点决定"回 ROUTE 处理下一条"还是"拼接收尾"，单意图轮不会走这条边
+        TRANSITIONS.put(CLARIFY, EnumSet.of(END, AGGREGATE));
         TRANSITIONS.put(REJECT, EnumSet.of(END));
-        TRANSITIONS.put(REPLY, EnumSet.of(END, FALLBACK));
-        TRANSITIONS.put(FALLBACK, EnumSet.of(END));
+        TRANSITIONS.put(REPLY, EnumSet.of(END, FALLBACK, AGGREGATE));
+        TRANSITIONS.put(FALLBACK, EnumSet.of(END, AGGREGATE));
+        // 聚合的两个出口：还有子意图回 ROUTE（受控环的回边），没有了就结束。
+        // REJECT 不进聚合：拒答是策略决定，多意图轮里其余子问题也不该再答，
+        // 直接结束（与单意图行为一致）
+        TRANSITIONS.put(AGGREGATE, EnumSet.of(END, ROUTE));
         TRANSITIONS.put(END, EnumSet.noneOf(ChatState.class));
     }
 

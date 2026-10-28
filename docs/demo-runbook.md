@@ -50,11 +50,11 @@ MV=/e/mysql/mysql-8.0.34-winx64/bin/mysql.exe      # 打印sql时用它
 q()  { "$MV" -h 127.0.0.1 -P 3306 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --default-character-set=utf8mb4 "$@"; }
 ```
 
-首次或换机器时建库并按 `sql/01 → sql/05` 顺序执行脚本：
+首次或换机器时建库并按 `sql/01 → sql/10` 顺序执行脚本（06 是演示账号、09 是工具业务数据，放最后）：
 
 ```bash
 q -e "CREATE DATABASE IF NOT EXISTS mewchat DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
-for f in sql/01_schema.sql sql/02_knowledge_chunk.sql sql/03_pending_clarification.sql          sql/04_question_cluster.sql sql/05_question_length.sql; do
+for f in sql/01_schema.sql sql/02_knowledge_chunk.sql sql/03_pending_clarification.sql          sql/04_question_cluster.sql sql/05_question_length.sql sql/07_message_feedback.sql sql/08_business_tables.sql sql/09_business_seed.sql sql/10_refresh_token.sql sql/06_demo_seed.sql; do
   "$MV" -h 127.0.0.1 -P 3306 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --default-character-set=utf8mb4 --database=mewchat < "$f"
 done
 ```
@@ -99,6 +99,20 @@ java FakeOpenAi.java 18124        # 另开一个终端常驻
 被替换的只是"对面那台服务器"。回答文本是固定的，但追问、工具调用、检索、兜底、
 落库这些产品行为与真模型完全一致。
 （**它替代不了模型效果**：回答质量、逐字速度、对提示词的遵循，只有真 Key 能体现。）
+
+**（可选）演示"模型自主选工具"（Function Calling）**：假端点已支持 OpenAI 工具调用协议
+（请求带 `tools` 时，订单类提问会一轮同时调 `order_query` + `logistics_query`）。
+启动应用时加环境变量即可切换：
+
+```bash
+export MEWCHAT_AGENT_MODELTOOLCALLING=true
+./start.bat fake
+```
+
+演示话术："MC202409240001 这个订单到哪了，物流如何" —— 日志里会看到
+`模型自主选工具完成：工具调用=[order_query, logistics_query]`，回复同时含订单状态与物流轨迹
+（查表路径做不到的组合查询）。模型不选工具/异常时自动降级回查表路径，行为不劣化。
+关闭该变量即回到默认的意图查表模式。
 
 ### 0.5 启动应用
 

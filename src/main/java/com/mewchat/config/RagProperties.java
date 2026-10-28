@@ -55,6 +55,9 @@ public class RagProperties {
     /** 单个切片送入模型的最大字符数，防止超长片段挤占上下文 */
     private int maxChunkChars = 1000;
 
+    /** 重排参数（实现选择与 LLM 重排的成本护栏） */
+    private Rerank rerank = new Rerank();
+
     /** BM25 关键词通道参数 */
     private Bm25 bm25 = new Bm25();
 
@@ -66,6 +69,44 @@ public class RagProperties {
 
     /** 文档分片参数 */
     private Chunking chunking = new Chunking();
+
+    /**
+     * 重排参数。
+     */
+    @Getter
+    @Setter
+    public static class Rerank {
+
+        /** 重排器实现 */
+        private Mode mode = Mode.HEURISTIC;
+
+        /**
+         * LLM 重排：送模型打分的候选上限（取融合序最前面的若干条）。
+         *
+         * <p>候选整体进提示词 = 一次调用按候选数线性膨胀 token。
+         * 上限是成本护栏；超出上限的候选直接不参与本轮返回
+         * （启发式路径同样只返回 topN，超出部分本来就不会出现在结果里）。
+         */
+        private int maxCandidates = 10;
+
+        /**
+         * LLM 重排：每个候选在提示词里的最大字符数（截断）。
+         *
+         * <p>重排只需要"判断这段讲的是不是这个问题"，读开头即可判断；
+         * 全文进提示词既费 token，也放大片段内容干扰输出格式的风险。
+         */
+        private int maxChunkChars = 200;
+
+        /** 重排器实现选择。 */
+        public enum Mode {
+
+            /** 规则式：融合分 + 词项覆盖度 + 标题匹配（零成本、确定） */
+            HEURISTIC,
+
+            /** 大模型打分：一次调用对候选批量打相关性分（更准，多一次调用与 token） */
+            LLM
+        }
+    }
 
     /**
      * BM25 参数。

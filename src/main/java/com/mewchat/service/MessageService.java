@@ -1,5 +1,6 @@
 package com.mewchat.service;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.mewchat.dao.mysql.entity.Message;
 
@@ -97,4 +98,31 @@ public interface MessageService extends IService<Message> {
      * @return 删除的消息条数
      */
     int deleteBySessionIds(List<String> sessionIds);
+
+    /* ==================== 反馈筛选（运营后台） ==================== */
+
+    /**
+     * 分页查询带某类反馈的助手消息，按反馈时间倒序。
+     *
+     * <p>运营后台"反馈质量看板"的数据来源：点踩密集的回答就是最真实的
+     * 待优化清单 —— 这是用户反馈接入数据飞轮的入口。
+     *
+     * @param feedback 反馈值，取值见 {@link #FEEDBACK_UP} / {@link #FEEDBACK_DOWN}
+     * @param page     页码，从 1 起
+     * @param size     每页条数
+     * @return 分页结果
+     */
+    Page<Message> pageByFeedback(int feedback, long page, long size);
+
+    /**
+     * 取某条助手消息之前最近的一条用户消息（即"触发这条回答的提问"）。
+     *
+     * <p>消息ID 是雪花ID、随时间单调，用 {@code id <} 即时间语义上的"之前"。
+     * 取不到（异常/已被清理）返回 null，调用方按无提问展示即可 ——
+     * 提问原文是看板的锦上添花，不值得为它失败。
+     *
+     * @param assistantMessage 助手消息
+     * @return 之前最近的一条用户消息；取不到时返回 null
+     */
+    Message findPrecedingUserMessage(Message assistantMessage);
 }

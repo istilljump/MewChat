@@ -63,6 +63,8 @@ public class FallbackNode implements ChatNode {
                 systemFailure ? "系统故障" : "无可靠依据",
                 context.getIntent(),
                 context.effectiveConfidence());
-        return ChatState.END;
+        // 多意图轮里兜底只是一段的终点，去聚合下一段；
+        // 本轮是否按兜底收尾（建单、进问题池）由聚合节点按"最差段"决定
+        return context.isMultiIntentTurn() ? ChatState.AGGREGATE : ChatState.END;
     }
 }

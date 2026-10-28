@@ -15,6 +15,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -74,6 +75,19 @@ public class IntentRecognizer {
               问某件商品的价格/库存/规格时，把商品词放 productName（如"无线蓝牙耳机 Pro"）
             """;
 
+    /**
+     * 多意图模式的追加指令（拼在 {@link #SYSTEM_PROMPT_TEMPLATE} 之后）。
+     *
+     * <p>输出结构从"单对象"升级为"对象数组"，单问题也输出单元素数组 ——
+     * 两种模式共用同一套字段抽取代码，差别只在最外层。
+     * 开头的标记同时是假端点与日志识别"这是多意图请求"的依据。
+     */
+    static final String MULTI_INTENT_SUFFIX = """
+
+            【多意图模式】用户可能在一句话里问了多件不同的事（如"查一下订单 MC1 到哪了，再看看耳机多少钱"）。
+            若确实包含多个独立问题，输出 {"intents":[{...},{...}]}，按用户提到的顺序排列，每个元素的字段与上面完全一致；
+            只问了一件事就输出单元素数组。每条元素的 rewrittenQuery 只描述该条问题本身，不要把别的问题混进去。""";
+
     private final ChatModel chatModel;
 
     private final ObjectMapper objectMapper;
@@ -96,7 +110,7 @@ public class IntentRecognizer {
         }
 
         try {
-            String raw = chatModel.chat(buildMessages(userMessage, history)).aiMessage().text();
+            String raw = chatModel.chat(buildMessages(userMessage, history, false)).aiMessage().text();
             return parse(raw, userMessage);
         } catch (Exception e) {
             // 模型超时、限流、网络异常都会走到这里：降级为 UNKNOWN，让流程去追问用户
@@ -106,14 +120,44 @@ public class IntentRecognizer {
     }
 
     /**
+     * 识别用户意图（多意图模式）：一句话里的多个问题拆成有序的子意图列表。
+     *
+     * <p>仍是<b>一次</b>模型调用 —— 拆解发生在同一次理解里，拆成多次调用
+     * 既重复传上下文，也会让"边界在哪"变得摇摆。任何失败都降级为
+     * 单条 UNKNOWN 结果：多意图模式的最坏情形等于单意图模式。
+     *
+     * @param userMessage  用户输入（建议传指代消解后的文本）
+     * @param history      最近若干轮历史
+     * @param maxIntents   子意图数量上限（受控环的圈数上限），超出部分截断并记日志
+     * @return 识别结果列表，<b>永不为空</b>；解析失败时返回单条 UNKNOWN
+     */
+    public List<IntentResult> recognizeAll(String userMessage, List<HistoryTurn> history, int maxIntents) {
+        if (!StringUtils.hasText(userMessage) || maxIntents <= 0) {
+            return List.of(IntentResult.unknown(userMessage));
+        }
+
+        try {
+            String raw = chatModel.chat(buildMessages(userMessage, history, true)).aiMessage().text();
+            return parseAll(raw, userMessage, maxIntents);
+        } catch (Exception e) {
+            log.warn("多意图识别调用失败，降级为单条 UNKNOWN：{}", e.getMessage());
+            return List.of(IntentResult.unknown(userMessage));
+        }
+    }
+
+    /**
      * 构造提示词消息。
      *
      * @param userMessage 用户输入
      * @param history     历史发言
+     * @param multi       是否追加多意图指令
      * @return 消息列表
      */
-    private List<ChatMessage> buildMessages(String userMessage, List<HistoryTurn> history) {
+    private List<ChatMessage> buildMessages(String userMessage, List<HistoryTurn> history, boolean multi) {
         String systemPrompt = String.format(SYSTEM_PROMPT_TEMPLATE, IntentType.candidates());
+        if (multi) {
+            systemPrompt = systemPrompt + MULTI_INTENT_SUFFIX;
+        }
 
         StringBuilder userPrompt = new StringBuilder();
         if (!CollectionUtils.isEmpty(history)) {
@@ -129,28 +173,98 @@ public class IntentRecognizer {
     }
 
     /**
-     * 解析模型返回的 JSON。
+     * 解析模型返回的 JSON（单意图模式）。
      *
      * @param raw         模型原始输出
      * @param userMessage 用户输入，作为降级时的兜底查询
      * @return 识别结果
      */
     private IntentResult parse(String raw, String userMessage) {
+        Map<String, Object> parsed = parseObject(raw, userMessage);
+        if (parsed == null) {
+            return IntentResult.unknown(userMessage);
+        }
+        return toResult(parsed, userMessage);
+    }
+
+    /**
+     * 解析模型返回的 JSON（多意图模式），兼容两种输出形态。
+     *
+     * <p>规范形态是 {@code {"intents":[...]}}；模型只回了一个单对象
+     * （没按多意图指令输出，或问题本来就只有一个）时按单条处理 ——
+     * 兼容它比报错好，这本来就是"模型输出不可控"这条线上的一环。
+     *
+     * @param raw         模型原始输出
+     * @param userMessage 用户输入，作为降级时的兜底查询
+     * @param maxIntents  子意图上限，超出截断
+     * @return 有序的识别结果列表，永不为空
+     */
+    private List<IntentResult> parseAll(String raw, String userMessage, int maxIntents) {
+        Map<String, Object> parsed = parseObject(raw, userMessage);
+        if (parsed == null) {
+            return List.of(IntentResult.unknown(userMessage));
+        }
+
+        if (!(parsed.get("intents") instanceof List<?> items) || items.isEmpty()) {
+            return List.of(toResult(parsed, userMessage));
+        }
+
+        List<IntentResult> results = new ArrayList<>(Math.min(items.size(), maxIntents));
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        for (Object item : items) {
+            if (results.size() >= maxIntents) {
+                log.warn("子意图数超过上限 {}，已截断（受控环的圈数必须封顶）", maxIntents);
+                break;
+            }
+            if (!(item instanceof Map)) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            IntentResult result = toResult((Map<String, Object>) item, userMessage);
+            // 去重：模型偶尔会把同一个问题拆成两条几乎相同的输出，
+            // 用户会看到同一段话出现两次
+            String key = result.intent() + "|" + result.rewrittenQuery() + "|" + result.params();
+            if (seen.add(key)) {
+                results.add(result);
+            }
+        }
+        if (results.isEmpty()) {
+            return List.of(IntentResult.unknown(userMessage));
+        }
+        return results;
+    }
+
+    /**
+     * 提取并解析模型输出里的 JSON 对象。
+     *
+     * @param raw         模型原始输出
+     * @param userMessage 用户输入（仅用于日志）
+     * @return 解析后的字段表；提取或解析失败返回 null（调用方自行降级）
+     */
+    private Map<String, Object> parseObject(String raw, String userMessage) {
         String json = extractJsonObject(raw);
         if (json == null) {
             log.warn("意图识别输出中未找到 JSON 对象，降级为 UNKNOWN：{}", abbreviate(raw));
-            return IntentResult.unknown(userMessage);
+            return null;
         }
 
-        Map<String, Object> parsed;
         try {
-            parsed = objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {
             });
         } catch (Exception e) {
             log.warn("意图识别输出 JSON 解析失败，降级为 UNKNOWN：{}", abbreviate(raw));
-            return IntentResult.unknown(userMessage);
+            return null;
         }
+    }
 
+    /**
+     * 把模型输出的单条意图对象转成识别结果。
+     *
+     * @param parsed      模型输出的字段表
+     * @param userMessage 用户输入，作为改写缺失时的兜底查询
+     * @return 识别结果
+     */
+    private IntentResult toResult(Map<String, Object> parsed, String userMessage) {
         IntentType intent = IntentType.parse(asString(parsed.get("intent")));
         BigDecimal confidence = asConfidence(parsed.get("confidence"));
         String rewrittenQuery = StringUtils.hasText(asString(parsed.get("rewrittenQuery")))

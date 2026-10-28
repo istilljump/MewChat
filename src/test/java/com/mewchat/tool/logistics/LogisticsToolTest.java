@@ -1,5 +1,6 @@
 package com.mewchat.tool.logistics;
 
+import com.mewchat.support.BusinessDataStub;
 import com.mewchat.tool.ToolResult;
 import com.mewchat.tool.order.OrderTool;
 import org.junit.jupiter.api.Test;
@@ -19,7 +20,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class LogisticsToolTest {
 
-    private final LogisticsTool logisticsTool = new LogisticsTool(new OrderTool());
+    private final BusinessDataStub businessData = BusinessDataStub.of();
+
+    private final LogisticsTool logisticsTool =
+            new LogisticsTool(new OrderTool(businessData), businessData);
 
     /**
      * 运单号直查。
@@ -174,12 +178,13 @@ class LogisticsToolTest {
     }
 
     /**
-     * 订单工具与物流工具的出参通过运单号对齐，两个工具的模拟数据不能各说各话。
+     * 订单工具与物流工具的出参通过运单号对齐，两个工具的数据不能各说各话。
      */
     @Test
-    void orderAndLogisticsMockDataShouldAgree() {
+    void orderAndLogisticsDataShouldAgree() {
         for (String orderNo : new String[]{"MC202409240001", "MC202409240002", "MC202409240003"}) {
-            OrderTool.OrderInfo order = new OrderTool().queryOrder(new OrderTool.OrderQuery(orderNo));
+            OrderTool.OrderInfo order =
+                    new OrderTool(businessData).queryOrder(new OrderTool.OrderQuery(orderNo));
             assertThat(order).as("订单 %s 应存在", orderNo).isNotNull();
 
             ToolResult logistics = logisticsTool.invoke(Map.of("orderNo", orderNo));

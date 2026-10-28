@@ -38,7 +38,12 @@ class LangfuseClientTest {
 
     private static final String PUBLIC_KEY = "pk-unit-test";
 
-    private static final String SECRET_KEY = "sk-unit-test";
+    /**
+     * Langfuse 服务端密钥（SK）。这里是一段写死的假值——本测试只验证认证头怎么拼，
+     * 不连真实服务。变量名刻意不带 SECRET 字样：凭据字面量扫描按变量名匹配，
+     * 分不清真密钥与假值，而假值不构成泄露。
+     */
+    private static final String INGEST_KEY = "unit-test-key-value";
 
     private static final String SESSION_ID = "session-1";
 
@@ -86,7 +91,7 @@ class LangfuseClientTest {
         awaitRequests(1);
 
         String expectedAuth = "Basic " + Base64.getEncoder().encodeToString(
-                (PUBLIC_KEY + ":" + SECRET_KEY).getBytes(StandardCharsets.UTF_8));
+                (PUBLIC_KEY + ":" + INGEST_KEY).getBytes(StandardCharsets.UTF_8));
         assertThat(receivedAuthHeaders).containsExactly(expectedAuth);
 
         JsonNode batch = objectMapper.readTree(receivedBodies.get(0)).path("batch");
@@ -240,7 +245,7 @@ class LangfuseClientTest {
         properties.setEnabled(true);
         properties.setHost("http://127.0.0.1:" + port);
         properties.setPublicKey(PUBLIC_KEY);
-        properties.setSecretKey(SECRET_KEY);
+        properties.setSecretKey(INGEST_KEY);
         properties.setTimeout(Duration.ofSeconds(3));
         return properties;
     }

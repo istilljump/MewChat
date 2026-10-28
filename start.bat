@@ -4,6 +4,7 @@ rem  MewChat Ò»¼üÆô¶¯£¨Windows£©
 rem
 rem  ÓÃ·¨£º
 rem    start.bat            Ô¤¼ì ¡ú °´Ðè½¨¿â/¹¹½¨ ¡ú Æô¶¯Ó¦ÓÃ£¨Ç°Ì¨£¬Ctrl+C Í£Ö¹£©
+rem                         Ó¦ÓÃ¾ÍÐ÷ºó»á×Ô¶¯ÓÃÄ¬ÈÏä¯ÀÀÆ÷´ò¿ªÔËÓªºóÌ¨
 rem    start.bat check      Ö»×ö»·¾³Ô¤¼ì£¬²»Æô¶¯
 rem    start.bat fake       Ë³´øÆô¶¯±¾µØ¼ÙÄ£ÐÍ¶Ëµã£¨Ã»ÓÐ´óÄ£ÐÍ Key Ê±ÓÃËü£©
 rem    start.bat rebuild    Ç¿ÖÆÖØÐÂ¹¹½¨£¨º¬ÅÜ²âÊÔ£©ºóÔÙÆô¶¯
@@ -24,6 +25,10 @@ set "MODE=%~1"
 set "APP_PORT=8080"
 set "FAKE_PORT=18124"
 set "JAR=target\mewchat-0.0.1-SNAPSHOT.jar"
+
+rem Òþ²ØÈë¿Ú£ºÆô¶¯¶Î»áÒÔ start /b ×Ôµ÷ÓÃ±¾½Å±¾½øÈë open_browser_watcher£¬
+rem Ìø¹ýÔ¤¼ìÓëºá·ù£¬µÈÓ¦ÓÃ¶Ë¿Ú¾ÍÐ÷ºó´ò¿ªä¯ÀÀÆ÷ÔÙÍË³ö
+if /i "%MODE%"=="__open_browser" goto :open_browser_watcher
 
 echo.
 echo ============ MewChat Ò»¼üÆô¶¯ ============
@@ -203,6 +208,7 @@ if "%LLM_API_KEY%"=="" (
 
 echo ============ Æô¶¯ÖÐ£¬ÈÕÖ¾ÈçÏÂ£¨°´ Ctrl+C Í£Ö¹£© ============
 echo   ½Ó¿ÚµØÖ· : http://127.0.0.1:%APP_PORT%
+echo   ä¯ÀÀÆ÷   : Ó¦ÓÃ¾ÍÐ÷ºó»á×Ô¶¯´ò¿ªÔËÓªºóÌ¨£¨/admin.html£©
 echo   ÑÝÊ¾ÕËºÅ : alice / admin£¬ÃÜÂë¶¼ÊÇ 123456
 echo   Êý¾Ý¿â   : %DB_NAME%@127.0.0.1:3306
 echo   £¨¸Ã¿âÃû»áÍ¨¹ý --spring.datasource.url ´«¸øÓ¦ÓÃ£¬ÓëÉÏÃæ¼ì²éµÄÊÇÍ¬Ò»¸ö¿â£©
@@ -219,6 +225,10 @@ rem Ò»µ©¿âÕËºÅ²»ÊÇ root£¨ÈçÖ»ÊÚÈ¨µ¥¿âµÄ×¨ÓÃÕËºÅ£©¾Í±ä³ÉÁ¬²»ÉÏ¿â£¨½×¶Î 16 ²Èµ½£©¡
 rem ¿ÚÁî²»½øÃüÁîÐÐ²ÎÊý£º½ø³ÌÁÐ±íÀïÄÜ¿´µ½²ÎÊý£¬»·¾³±äÁ¿Ôò²»»áÄÇÑù±©Â¶¡£
 set "MYSQL_USERNAME=%MYSQL_USER%"
 set "JDBC_URL=jdbc:mysql://127.0.0.1:3306/%DB_NAME%?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+
+rem ÆðºóÌ¨×Ó½ø³Ì£ºµÈÓ¦ÓÃ¶Ë¿Ú¾ÍÐ÷ºó×Ô¶¯´ò¿ªä¯ÀÀÆ÷£¨ÓÐ 60 ÃëÉÏ½ç£¬²»×èÈûÇ°Ì¨Æô¶¯£©
+start "" /b "%~f0" __open_browser
+
 java -jar "%JAR%" --spring.datasource.url="%JDBC_URL%"
 
 echo.
@@ -362,3 +372,21 @@ echo.
 echo °´ÈÎÒâ¼ü¹Ø±Õ´°¿Ú¡£
 pause >nul
 endlocal
+goto :eof
+
+rem ==================== ºóÌ¨£ºµÈÓ¦ÓÃ¾ÍÐ÷ºó´ò¿ªä¯ÀÀÆ÷ ====================
+rem Ö»ÓÉÆô¶¯¶ÎÒÔ start /b ×Ôµ÷ÓÃ½øÈë£¨¼ûÎÄ¼þ¿ªÍ·µÄÒþ²ØÈë¿Ú£©£¬Õý³£Ë«»÷²»»á×ßµ½ÕâÀï¡£
+rem ÂÖÑ¯Ó¦ÓÃ¶Ë¿Ú£¬¿ªÊ¼¼àÌý¼´ÈÏÎª¾ÍÐ÷²¢´ò¿ªä¯ÀÀÆ÷£»60 ÃëÉÏ½ç±£Ö¤Ó¦ÓÃÆô¶¯Ê§°Ü
+rem £¨»òÓÃ»§ÒÑ Ctrl+C£©Ê±²»»áÁôÏÂ¿Õ×ªµÄ½ø³Ì¡¢Ò²²»»áµ¯³öÒ»¸öÁ¬²»ÉÏµÄÒ³Ãæ¡£
+:open_browser_watcher
+set /a OPEN_WAITED=0
+:open_browser_loop
+call :port_up %APP_PORT%
+if defined PORT_UP (
+    start "" "http://127.0.0.1:%APP_PORT%/admin.html"
+    exit /b 0
+)
+if %OPEN_WAITED% geq 60 exit /b 0
+ping -n 2 127.0.0.1 >nul 2>&1
+set /a OPEN_WAITED+=1
+goto :open_browser_loop

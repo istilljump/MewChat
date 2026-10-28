@@ -92,6 +92,9 @@ mewchat:
     token-secret: ${MEWCHAT_TOKEN_SECRET:}
     # 令牌有效期（分钟）
     token-expire-minutes: 120
+    # 刷新令牌有效期（天，阶段 30）：落库可吊销，用于静默续期与登出。
+    # 每次刷新都会旋转（旧值立即作废）并重新计期，长期活跃的用户无需重新登录
+    refresh-token-days: 7
 
   # ---- 跨域（前后端分离部署时需配置）----
   # 留空 = 仅允许同源。不要写 * ：接口靠 Bearer 令牌鉴权，通配来源等于允许任意网站调用
@@ -110,7 +113,7 @@ mewchat:
       # 因此"应用启动成功"不等于"模型接好了"。
       # 只有真正留空（LLM_API_KEY= 且删掉默认值）才会启动失败 —— 那是配置错误。
       # 接真实模型：设置环境变量 LLM_API_KEY 即可，不必改本文件。
-      api-key: ${LLM_API_KEY:sk-REPLACE-WITH-YOUR-REAL-KEY}
+      api-key: ${LLM_API_KEY:REPLACE-WITH-YOUR-REAL-KEY}
       # 示例值（DeepSeek）。DeepSeek / 通义千问(兼容模式) / 智谱GLM 等均可，
       # 换厂商只改 base-url 与 model-name，不用改代码
       base-url: ${LLM_BASE_URL:https://api.deepseek.com/v1}
@@ -201,6 +204,31 @@ mewchat:
     # 状态机最大步数。转移表里有一个受控的环（置信度校验 → 补检索 → 置信度校验），
     # 此项是它的兜底保险：环的终止条件由业务保证（只补检索一次）
     max-steps: 20
+    # 是否让模型自主选择业务工具（Function Calling）。开启后 ToolSpecialist 先走
+    # 模型工具调用循环（支持一次组合多个工具，如"我的订单到哪了"= 查订单+查物流），
+    # 模型不选工具/超轮数/异常时自动降级回"意图 → 查表"路径，行为不劣化。
+    # 默认关闭：工具选择的正确性从确定变概率，建议先在评测集上对比两种模式再决定。
+    model-tool-calling: false
+    # 模型工具调用循环的最大轮数（一轮 = 模型一次响应）。到轮数仍未收敛即降级查表
+    model-tool-calling-max-rounds: 3
+    # 多意图拆解（阶段 29）：一句话问多件事时拆成子意图逐条执行、聚合回复。
+    # 默认关闭，理由同 model-tool-calling：拆解正确性从确定变概率，
+    # 且每条子意图多一轮调用成本，先在评测上对比再决定。失败自动降级为单意图
+    multi-intent: false
+    # 多意图拆解的最大子意图数（受控环的圈数上限，按用户提到的顺序取前 N）
+    multi-intent-max-sub-intents: 3
+
+  # ---- 接口限流 ----
+  # 进程内内存限流（见 service.RateLimitService）：单机演示形态够用，
+  # 多实例部署需换 Redis（各实例计数独立 = 限流阈值乘以实例数）
+  rate-limit:
+    enabled: true
+    # 登录连续失败 N 次后临时锁定（用户名与"用户名+来源IP"两把钥匙同时累计）
+    login-max-failures: 5
+    # 锁定时长（分钟）。临时锁定而非永久：永久锁定等于给攻击者"锁死别人账号"的武器
+    login-lock-minutes: 10
+    # 每用户每分钟对话轮数（每轮背后是多次模型调用，token 成本真实存在）
+    chat-requests-per-minute: 10
 
   # ---- 安全护栏 ----
   # 命中敏感词的输入直接拒答，不送进大模型（见 service.GuardrailService）
@@ -235,6 +263,16 @@ mewchat:
     # 这次把最终片段数放大到 top-k × 本值，用更宽的池子把依据补足。
     # 只补一次（编排层保证）—— 反复放宽到满意为止，等于把置信度变成摆设
     retry-top-k-multiplier: 2
+    # 重排器实现（阶段 28）：heuristic=规则式（默认，零成本确定）；
+    # llm=大模型按语义给候选打相关性分（更准，每次检索多一次调用；
+    # 模型异常/输出不可解析时该次检索降级为"不重排"，最坏情形等于 heuristic）。
+    # 切换后看启动日志"重排器：..."一行确认生效
+    rerank:
+      mode: heuristic
+      # LLM 模式：送模型打分的候选上限（取融合序最前面若干条），token 成本护栏
+      max-candidates: 10
+      # LLM 模式：每个候选在提示词里的最大字符数（重排读开头即可判断）
+      max-chunk-chars: 200
     # 单个切片送入模型的最大字符数，防止超长片段挤占上下文
     max-chunk-chars: 1000
 

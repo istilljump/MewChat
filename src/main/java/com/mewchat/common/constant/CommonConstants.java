@@ -53,7 +53,4 @@ public final class CommonConstants {
 
     /** 链路追踪 ID，用于把一次请求的各层日志串起来 */
     public static final String HEADER_TRACE_ID = "X-Trace-Id";
-
-    /** 携带 API Key 的请求头名 */
-    public static final String HEADER_API_KEY = "X-Api-Key";
 }

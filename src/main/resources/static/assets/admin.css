@@ -350,3 +350,8 @@
     .nav-item.active { box-shadow: 2px 2px 0 var(--ink); }
     .work { padding: 16px 14px; }
 }
+
+/* 被点踩的回答：浅红底提示"这里答得不好"，与普通会话行区分开 */
+.conv-row-bad {
+    background: #fdecec;
+}

@@ -1,5 +1,6 @@
 package com.mewchat.tool.product;
 
+import com.mewchat.support.BusinessDataStub;
 import com.mewchat.tool.ToolResult;
 import com.mewchat.tool.refund.RefundTool;
 import org.junit.jupiter.api.Test;
@@ -26,9 +27,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ProductToolTest {
 
-    private final ProductTool productTool = new ProductTool();
+    /** 两个工具共用同一份桩数据：类目一致性断言才有意义 */
+    private final BusinessDataStub businessData = BusinessDataStub.of();
 
-    private final RefundTool refundTool = new RefundTool();
+    private final ProductTool productTool = new ProductTool(businessData);
+
+    private final RefundTool refundTool = new RefundTool(businessData);
 
     /**
      * 工具名必须与编排侧引用的常量一致，否则调用时报"未注册的工具"。
@@ -165,7 +169,8 @@ class ProductToolTest {
      */
     @Test
     void everyCategoryShouldExistInRefundPolicy() {
-        for (String productName : ProductTool.allProductNames()) {
+        for (String productName : businessData.products().stream()
+                .map(com.mewchat.dao.mysql.entity.Product::getProductName).toList()) {
             String category = String.valueOf(
                     productTool.invoke(Map.of("productName", productName)).getData().get("category"));
 

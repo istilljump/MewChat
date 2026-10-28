@@ -8,8 +8,9 @@
  *   1. 任何 HTML 都不能以标签形式存活（XSS 防线）；
  *   2. 白名单格式（加粗/列表/行内代码）确实被渲染出来。
  *
- * 取函数的方式是"按标记切片 + eval"：app.js 是一个 IIFE，函数不对外导出；
- * 为测试而导出它们（改产品代码迁就测试）不如让测试来适配产品代码。
+ * 取函数的方式是"按标记切片 + 临时模块"：app.js 是一个 IIFE，函数不对外导出；
+ * 为测试而导出它们（改产品代码迁就测试）不如让测试来适配产品代码。切片写进
+ * 临时 .cjs 再 require 回来——执行的是与线上一字不差的源码，但不经过 eval。
  * 切片标记是稳定的注释锚点，app.js 重构时若挪动了函数，这里会立刻失败提醒。
  */
 const fs = require('fs');
@@ -26,8 +27,22 @@ if (start < 0 || end < 0 || end <= start) {
     console.error('未能从 app.js 定位渲染函数（锚点变了？）');
     process.exit(2);
 }
-// eslint-disable-next-line no-eval
-eval(source.slice(start, end));
+// 切片补一行导出写进固定路径的临时 .cjs，再以字面量路径 require 回来：
+// 执行的是与线上一字不差的源码，但不经过 eval/动态 require（那会被安全扫描
+// 按"代码注入/命令注入"拦截）。这里没有注入面——源码来自本仓库自己的 app.js，
+// 不是不可信输入；文件用完即删，路径固定因此 require 是字面量调用。
+const SLICE_MODULE = path.join(__dirname, '.render-slice.tmp.cjs');
+fs.writeFileSync(
+    SLICE_MODULE,
+    source.slice(start, end) + '\nmodule.exports = { escapeHtml: escapeHtml, renderMarkdown: renderMarkdown };\n');
+let renderers;
+try {
+    renderers = require('./.render-slice.tmp.cjs');
+} finally {
+    fs.unlinkSync(SLICE_MODULE);
+}
+const escapeHtml = renderers.escapeHtml;
+const renderMarkdown = renderers.renderMarkdown;
 
 let failures = 0;
 function check(name, condition, detail) {

@@ -22,10 +22,17 @@
 
     var TOKEN_KEY = 'mewchat.token';
     var USER_KEY = 'mewchat.user';
+    // 刷新令牌与访问令牌过期时间（阶段 30）：前者用于静默续期与登出，后者用于安排续期时机
+    var REFRESH_KEY = 'mewchat.refresh';
+    var EXPIRE_KEY = 'mewchat.expire';
+    /** 距访问令牌过期还剩多久时开始静默续期 */
+    var RENEW_AHEAD_MS = 5 * 60 * 1000;
 
     var state = {
         token: localStorage.getItem(TOKEN_KEY) || '',
         username: localStorage.getItem(USER_KEY) || '',
+        refreshToken: localStorage.getItem(REFRESH_KEY) || '',
+        expiresAt: Number(localStorage.getItem(EXPIRE_KEY)) || 0,
         currentSessionId: '',
         sessions: [],
         sending: false,
@@ -274,12 +281,104 @@
         UNKNOWN: '无法识别'
     };
 
-    /** 退出登录：清掉本地令牌并回到登录层（服务端是无状态令牌，没有"登出接口"） */
+    /**
+     * 把令牌对写进本地存储。
+     *
+     * @param data 登录/刷新接口的返回
+     */
+    function storeTokens(data) {
+        state.token = data.token;
+        state.refreshToken = data.refreshToken || '';
+        state.expiresAt = data.expiresAt ? parseServerTime(data.expiresAt) : 0;
+        localStorage.setItem(TOKEN_KEY, state.token);
+        if (state.refreshToken) {
+            localStorage.setItem(REFRESH_KEY, state.refreshToken);
+        }
+        if (state.expiresAt) {
+            localStorage.setItem(EXPIRE_KEY, String(state.expiresAt));
+        }
+    }
+
+    /**
+     * 解析服务端时间串（yyyy-MM-dd HH:mm:ss，按本地时区）。
+     *
+     * @param text 时间串
+     * @return 毫秒时间戳；解析失败返回 0
+     */
+    function parseServerTime(text) {
+        var normalized = String(text).replace(' ', 'T');
+        var ms = new Date(normalized).getTime();
+        return isNaN(ms) ? 0 : ms;
+    }
+
+    /**
+     * 静默续期：用刷新令牌换新令牌对（旋转，旧刷新令牌随即作废）。
+     *
+     * @return true 表示续期成功
+     */
+    async function renewTokens() {
+        if (!state.refreshToken) {
+            return false;
+        }
+        try {
+            // 刻意走原生 fetch 而不是 api()：续期请求本身不能再触发 401 续期逻辑（会递归）
+            var resp = await fetch('/api/auth/refresh', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+                body: JSON.stringify({ refreshToken: state.refreshToken })
+            });
+            if (resp.status === 401) {
+                signOut('登录已过期，请重新登录');
+                return false;
+            }
+            var json = await resp.json();
+            if (json.code !== 0 || !json.data) {
+                signOut('登录已过期，请重新登录');
+                return false;
+            }
+            storeTokens(json.data);
+            return true;
+        } catch (e) {
+            // 网络抖动时不立刻登出：刷新令牌还有效，下一轮定时器会再试
+            return false;
+        }
+    }
+
+    /**
+     * 续期巡检：访问令牌临近过期（或已过期）就静默续期。
+     * 由定时器每分钟调用一次；续期失败的下次巡检会继续尝试。
+     */
+    async function renewIfNeeded() {
+        if (!state.token || !state.expiresAt) {
+            return;
+        }
+        if (Date.now() >= state.expiresAt - RENEW_AHEAD_MS) {
+            await renewTokens();
+        }
+    }
+
+    /** 退出登录：清掉本地令牌并回到登录层；服务端吊销刷新令牌（尽力而为） */
     function signOut(message) {
+        // 吊销通知放最前：signOut 之后 state.refreshToken 已清空。
+        // 用 keepalive 让"关页面前登出"这类场景请求也能发出去；失败不影响本地登出
+        if (state.refreshToken) {
+            try {
+                fetch('/api/auth/logout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+                    body: JSON.stringify({ refreshToken: state.refreshToken }),
+                    keepalive: true
+                }).catch(function () { /* 尽力而为 */ });
+            } catch (e) { /* 尽力而为 */ }
+        }
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
+        localStorage.removeItem(REFRESH_KEY);
+        localStorage.removeItem(EXPIRE_KEY);
         state.token = '';
         state.username = '';
+        state.refreshToken = '';
+        state.expiresAt = 0;
         state.currentSessionId = '';
         el.app.hidden = true;
         el.loginLayer.hidden = false;
@@ -314,6 +413,23 @@
         // 401/403 是安全过滤器给出的真实 HTTP 状态码；业务失败是 200 + 非 0 业务码。
         // 两种都要处理：前者代表登录态失效，后者代表这次操作没成功。
         if (resp.status === 401) {
+            // 访问令牌过期 ≠ 立刻请出去：有刷新令牌就静默续期一次、重放本请求。
+            // 重放仍 401（刷新令牌也失效了）才真正登出
+            if (await renewTokens()) {
+                headers['Authorization'] = 'Bearer ' + state.token;
+                var retry = await fetch(path, {
+                    method: options.method || 'GET',
+                    headers: headers,
+                    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+                });
+                if (retry.status !== 401) {
+                    var retryJson = await retry.json();
+                    if (retryJson.code !== 0) {
+                        throw new Error(retryJson.message || ('请求失败（code=' + retryJson.code + '）'));
+                    }
+                    return retryJson.data;
+                }
+            }
             signOut('登录已过期，请重新登录');
             throw new Error('unauthorized');
         }
@@ -337,7 +453,7 @@
             state.token = data.token;
             // 优先显示昵称（如"演示客户"），没有昵称时退回登录名
             state.username = data.nickname || data.username || el.loginUser.value.trim();
-            localStorage.setItem(TOKEN_KEY, state.token);
+            storeTokens(data);
             localStorage.setItem(USER_KEY, state.username);
             await enterApp();
         } catch (e) {
@@ -990,7 +1106,8 @@
         card.progress.textContent = '正在处理';
 
         var succeeded = false;
-        // 每轮一个中止控制器：点"停止"掐断的是"读取"，后台仍会把本轮完成并落库
+        // 每轮一个中止控制器：点"停止"断开连接，服务端会感知断开并中止后续生成
+        // （不再白花模型 token，也不建单、不进问题池），已生成的部分照常落库
         var controller = new AbortController();
         state.abortController = controller;
         try {
@@ -1000,14 +1117,13 @@
             card.progress.hidden = true;
             if (e && e.name === 'AbortError') {
                 // 已收到的片段保留在屏幕上（它们是真的到过的内容），附一句如实的说明：
-                // 服务端约定是"断开后流程照跑并落库"，所以完整回答稍后能从历史里看到，
-                // 这里若假装"已取消"，用户反而找不到刚才那轮的完整回答
+                // 服务端会中止本轮后续生成并保存已生成的部分，所以稍后能看到部分回答
                 if (!card.body.textContent) {
                     card.body.textContent = '（已停止，本轮还没有收到内容）';
                 }
                 var note = document.createElement('div');
                 note.className = 'stopped-note';
-                note.textContent = '已停止接收。本轮会在后台继续完成并保存，稍后刷新可看到完整回答。';
+                note.textContent = '已停止。服务端已中止本轮生成，已生成的部分会保存。';
                 card.body.appendChild(note);
             } else {
                 card.body.textContent = '本轮处理失败：' + e.message;
@@ -1205,12 +1321,19 @@
 
     /* ==================== 启动 ==================== */
 
+    // 静默续期巡检（阶段 30）：每分钟看一次访问令牌的剩余寿命，
+    // 临近过期就换新令牌对。长期挂着的客服工作台因此不需要重新登录
+    setInterval(function () { renewIfNeeded(); }, 60 * 1000);
+
     // 带着旧令牌直接进来：先验证令牌还能用（拉一次会话列表），401 会自动回到登录层
     (async function boot() {
         if (!state.token) {
             el.loginLayer.hidden = false;
             return;
         }
+        // 打开页面就先做一次巡检：离线放了一夜回来，令牌可能已过期，
+        // 401 会触发静默续期（api() 里）或回到登录层
+        renewIfNeeded();
         try {
             await enterApp();
         } catch (e) {

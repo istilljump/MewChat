@@ -19,6 +19,7 @@ import com.mewchat.dao.mysql.entity.MessageRefDoc;
 import com.mewchat.service.ConversationCleanupService;
 import com.mewchat.service.ConversationService;
 import com.mewchat.service.MessageService;
+import com.mewchat.service.RateLimitService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,6 +93,9 @@ public class ChatController {
 
     private final SseProperties sseProperties;
 
+    /** 对话接口限速（见 {@code service.RateLimitService}） */
+    private final RateLimitService rateLimitService;
+
     /** 流式任务专用线程池，见 {@code config.SseConfig} */
     private final Executor sseExecutor;
 
@@ -100,12 +104,14 @@ public class ChatController {
                           MessageService messageService,
                           ConversationCleanupService cleanupService,
                           SseProperties sseProperties,
+                          RateLimitService rateLimitService,
                           @Qualifier("sseTaskExecutor") Executor sseExecutor) {
         this.chatSupervisor = chatSupervisor;
         this.conversationService = conversationService;
         this.messageService = messageService;
         this.cleanupService = cleanupService;
         this.sseProperties = sseProperties;
+        this.rateLimitService = rateLimitService;
         this.sseExecutor = sseExecutor;
     }
 
@@ -294,6 +300,13 @@ public class ChatController {
     public SseEmitter send(@Valid @RequestBody ChatSendRequest request,
                            @AuthenticationPrincipal AuthenticatedUser user) {
         long userId = requireUserId(user);
+
+        // 对话限速在归属校验之后、建连接之前：超限的是一个 JSON 错误而不是一串状态事件。
+        // 每轮对话背后是多次模型调用，不设防的 send 等于把 token 成本开放给脚本
+        if (!rateLimitService.allowChat("user:" + userId)) {
+            throw new BizException(ResultCode.TOO_MANY_REQUESTS, "发送太频繁，请稍后再试");
+        }
+
         conversationService.resolveOwnedSession(request.sessionId(), userId);
 
         // 超时取配置值：不设置在长回答（多轮工具调用）场景下会被容器默认值中途掐断

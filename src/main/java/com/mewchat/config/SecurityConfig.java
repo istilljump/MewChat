@@ -86,6 +86,10 @@ public class SecurityConfig {
      */
     private static final String[] PUBLIC_PATHS = {
             "/api/auth/login",
+            // 刷新与登出免认证：刷新令牌本身就是这两个请求的凭证（Bearer 凭证模式），
+            // 要求"过期的访问令牌仍有效"才能续期是本末倒置
+            "/api/auth/refresh",
+            "/api/auth/logout",
             "/favicon.ico",
             "/",
             "/index.html",

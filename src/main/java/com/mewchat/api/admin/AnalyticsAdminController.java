@@ -1,13 +1,19 @@
 package com.mewchat.api.admin;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.mewchat.api.admin.dto.FeedbackMessagesView;
+import com.mewchat.api.admin.dto.KnowledgeDraftView;
 import com.mewchat.api.admin.dto.MarkOptimizedRequest;
 import com.mewchat.api.admin.dto.OptimizationChecklistView;
 import com.mewchat.api.admin.dto.StatsOverviewView;
 import com.mewchat.common.exception.BizException;
 import com.mewchat.common.result.Result;
 import com.mewchat.common.result.ResultCode;
+import com.mewchat.dao.mysql.entity.Message;
 import com.mewchat.service.KnowledgeDocumentService;
+import com.mewchat.service.KnowledgeDraftService;
 import com.mewchat.service.LowConfidenceQuestionService;
+import com.mewchat.service.MessageService;
 import com.mewchat.service.QuestionClusteringService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -17,7 +23,11 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 数据统计与数据飞轮接口（运营后台）。
@@ -50,14 +60,22 @@ public class AnalyticsAdminController {
 
     private final KnowledgeDocumentService documentService;
 
+    private final KnowledgeDraftService draftService;
+
+    private final MessageService messageService;
+
     public AnalyticsAdminController(AdminStatsAssembler statsAssembler,
                                     QuestionClusteringService clusteringService,
                                     LowConfidenceQuestionService questionService,
-                                    KnowledgeDocumentService documentService) {
+                                    KnowledgeDocumentService documentService,
+                                    KnowledgeDraftService draftService,
+                                    MessageService messageService) {
         this.statsAssembler = statsAssembler;
         this.clusteringService = clusteringService;
         this.questionService = questionService;
         this.documentService = documentService;
+        this.draftService = draftService;
+        this.messageService = messageService;
     }
 
     /**
@@ -129,6 +147,67 @@ public class AnalyticsAdminController {
             return Result.error(ResultCode.NOT_FOUND, "问题不存在或已是已优化状态：" + questionId);
         }
         return Result.success();
+    }
+
+    /**
+     * AI 起草知识文档草稿。
+     *
+     * <p>飞轮"补知识"一步的智能化：对问题池里的某条问题，让模型基于已有知识库
+     * 相似片段起草候选文档，运营审核修改后走既有录入接口入库、再标记已优化。
+     * <b>草稿只返回不落库</b> —— 模型产出可能有幻觉，采纳决策权在运营。
+     *
+     * @param questionId 问题池记录ID
+     * @return 草稿视图（标题 + 正文 + 参考片段标题）
+     */
+    @PostMapping("/questions/{questionId}/draft")
+    public Result<KnowledgeDraftView> draft(@PathVariable Long questionId) {
+        return Result.success(draftService.draft(questionId), "草稿已生成（未入库，请审核后录入）");
+    }
+
+    /**
+     * 按反馈筛选助手消息（反馈质量看板）。
+     *
+     * <p>点踩密集的回答就是最真实的待优化清单 —— 这是用户反馈接入飞轮的入口。
+     * 提问原文是逐条补查的（每页最多 size 次点查），管理后台的分页量级下可接受；
+     * 数据量大后应与预聚合一起下沉到专门查询。
+     *
+     * @param feedback 反馈值：1 有用 / 2 无用（默认 2 —— 点踩才是要看的）
+     * @param page     页码，从 1 起
+     * @param size     每页条数，上限 50
+     * @return 分页的反馈消息列表
+     */
+    @GetMapping("/feedback-messages")
+    public Result<FeedbackMessagesView> feedbackMessages(
+            @RequestParam(defaultValue = "2") Integer feedback,
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "10") long size) {
+        if (feedback == null || (feedback != MessageService.FEEDBACK_UP
+                && feedback != MessageService.FEEDBACK_DOWN)) {
+            throw new BizException(ResultCode.PARAM_INVALID, "feedback 取值只能是 1（有用）或 2（无用）");
+        }
+        long cappedSize = Math.min(Math.max(size, 1), 50);
+        Page<Message> result = messageService.pageByFeedback(feedback, Math.max(page, 1), cappedSize);
+
+        List<FeedbackMessagesView.Item> items = new ArrayList<>();
+        for (Message message : result.getRecords()) {
+            Message preceding = messageService.findPrecedingUserMessage(message);
+            items.add(new FeedbackMessagesView.Item(
+                    String.valueOf(message.getId()),
+                    message.getSessionId(),
+                    preceding == null || preceding.getContent() == null ? "" : preceding.getContent(),
+                    excerpt(message.getContent()),
+                    message.getFeedback(),
+                    message.getFeedbackTime() == null ? null : message.getFeedbackTime().toString()));
+        }
+        return Result.success(new FeedbackMessagesView(result.getTotal(), items));
+    }
+
+    /** 回答摘要：看板里只需要读出"答了个啥"，200 字足够且保护长回答不撑爆列表 */
+    private String excerpt(String content) {
+        if (content == null) {
+            return "";
+        }
+        return content.length() <= 200 ? content : content.substring(0, 200) + "…";
     }
 
     /**

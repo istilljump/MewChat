@@ -1,5 +1,6 @@
 package com.mewchat.tool.refund;
 
+import com.mewchat.support.BusinessDataStub;
 import com.mewchat.tool.ToolResult;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class RefundToolTest {
 
-    private final RefundTool refundTool = new RefundTool();
+    private final RefundTool refundTool = new RefundTool(BusinessDataStub.of());
 
     /**
      * 按标准类目名查询。

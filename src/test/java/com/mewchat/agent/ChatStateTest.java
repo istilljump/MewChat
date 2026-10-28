@@ -127,6 +127,15 @@ class ChatStateTest {
         assertThat(ChatState.REJECT.canTransitionTo(ChatState.END)).isTrue();
         // 回复生成失败可降级为兜底
         assertThat(ChatState.REPLY.canTransitionTo(ChatState.FALLBACK)).isTrue();
+
+        // 多意图受控环：三个段终点都可以去聚合，聚合可回路由（处理下一条）或结束
+        assertThat(ChatState.REPLY.canTransitionTo(ChatState.AGGREGATE)).isTrue();
+        assertThat(ChatState.CLARIFY.canTransitionTo(ChatState.AGGREGATE)).isTrue();
+        assertThat(ChatState.FALLBACK.canTransitionTo(ChatState.AGGREGATE)).isTrue();
+        assertThat(ChatState.AGGREGATE.canTransitionTo(ChatState.ROUTE)).isTrue();
+        assertThat(ChatState.AGGREGATE.canTransitionTo(ChatState.END)).isTrue();
+        // 拒答是策略决定：多意图轮里其余子问题也不该再答，不能进聚合
+        assertThat(ChatState.REJECT.canTransitionTo(ChatState.AGGREGATE)).isFalse();
     }
 
     /**

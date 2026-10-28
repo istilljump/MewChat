@@ -1,0 +1,259 @@
+{
+  "说明": "MewChat 回答质量评测集。每条用例用独立会话按轮执行，只断言确定性事实（最终状态、意图、工具数据、引用标题、固定话术关键词），不断言模型的措辞。断言细节见 docs/eval-guide.md。",
+  "前置条件": [
+    "应用已在 8080 运行（真模型或 tools/fake-openai 假端点均可）",
+    "已执行 sql/01~05 与 sql/06（评测账号 alice / 123456）",
+    "知识库里已录入演示文档：七天无理由退换货规则、赠品发货时效说明（见 docs/demo-runbook.md 0.6 节）"
+  ],
+  "cases": [
+    {
+      "id": "order_status",
+      "name": "订单状态查询（带订单号）",
+      "turns": [
+        {
+          "message": "MC202409240001 这个订单现在什么状态",
+          "expect": {
+            "intentAny": ["ORDER_QUERY", "LOGISTICS_QUERY"],
+            "finalState": "REPLY",
+            "mustContainAny": ["已发货", "顺丰", "运单号"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "order_not_found",
+      "name": "订单号不存在/缺失 → 澄清而不是报错",
+      "turns": [
+        {
+          "message": "帮我查一下订单 MC888888888888",
+          "expect": {
+            "intentAny": ["ORDER_QUERY", "LOGISTICS_QUERY"],
+            "finalState": "CLARIFY",
+            "mustContainAny": ["核对", "没有查到", "订单号"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "order_missing_no",
+      "name": "缺订单号 → 追问",
+      "turns": [
+        {
+          "message": "我要查我的订单",
+          "expect": {
+            "intentAny": ["ORDER_QUERY", "LOGISTICS_QUERY"],
+            "finalState": "CLARIFY",
+            "mustContainAny": ["订单号"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "order_track",
+      "name": "订单物流一起问（组合查询）",
+      "turns": [
+        {
+          "message": "MC202409240001 这单到哪了，什么时候能送到",
+          "expect": {
+            "intentAny": ["ORDER_QUERY", "LOGISTICS_QUERY"],
+            "finalState": "REPLY",
+            "mustContainAny": ["顺丰", "运单号"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "logistics_by_tracking",
+      "name": "直接给运单号查物流",
+      "turns": [
+        {
+          "message": "运单 SF1234567890 到哪了",
+          "expect": {
+            "intentAny": ["ORDER_QUERY", "LOGISTICS_QUERY"],
+            "finalStateAny": ["REPLY", "CLARIFY"],
+            "mustContainAny": ["顺丰", "运输", "核对", "订单号"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "product_price",
+      "name": "商品价格（关键词命中）",
+      "turns": [
+        {
+          "message": "耳机多少钱",
+          "expect": {
+            "intent": "PRODUCT_QUERY",
+            "finalState": "REPLY",
+            "mustContain": ["499"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "product_price_2",
+      "name": "商品价格（长词优先于短词）",
+      "turns": [
+        {
+          "message": "智能保温杯什么价格",
+          "expect": {
+            "intent": "PRODUCT_QUERY",
+            "finalState": "REPLY",
+            "mustContain": ["258"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "product_clarify",
+      "name": "没说商品名 → 列在售候选",
+      "turns": [
+        {
+          "message": "我想问个商品",
+          "expect": {
+            "intent": "PRODUCT_QUERY",
+            "finalState": "CLARIFY",
+            "mustContainAny": ["保温杯", "耳机"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "product_resume",
+      "name": "回序号续接（跳过意图识别）",
+      "turns": [
+        {
+          "message": "我想问个商品",
+          "expect": { "finalState": "CLARIFY" }
+        },
+        {
+          "message": "1",
+          "expect": {
+            "finalState": "REPLY",
+            "mustContainAny": ["无线蓝牙耳机", "499"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "knowledge_return",
+      "name": "知识命中（带引用）",
+      "turns": [
+        {
+          "message": "七天无理由退货怎么操作",
+          "expect": {
+            "intent": "KNOWLEDGE_QA",
+            "finalState": "REPLY",
+            "citationTitle": "七天无理由"
+          }
+        }
+      ]
+    },
+    {
+      "id": "knowledge_gift",
+      "name": "知识命中（内容来自文档）",
+      "turns": [
+        {
+          "message": "赠品什么时候发货",
+          "expect": {
+            "intent": "KNOWLEDGE_QA",
+            "finalState": "REPLY",
+            "citationTitle": "赠品",
+            "mustContainAny": ["3个工作日", "随主商品"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "knowledge_refund_policy",
+      "name": "退换货政策问法落到已录入文档",
+      "turns": [
+        {
+          "message": "退换货政策是什么",
+          "expect": {
+            "intent": "KNOWLEDGE_QA",
+            "finalState": "REPLY",
+            "citationTitle": "七天无理由"
+          }
+        }
+      ]
+    },
+    {
+      "id": "knowledge_miss_invoice",
+      "name": "知识未命中 → 兜底 + 转人工",
+      "turns": [
+        {
+          "message": "你们支持开发票吗",
+          "expect": {
+            "intent": "KNOWLEDGE_QA",
+            "finalState": "FALLBACK",
+            "handoffRequired": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "coreference_time_limit",
+      "name": "指代消解追问（多轮）",
+      "turns": [
+        {
+          "message": "七天无理由退货怎么操作",
+          "expect": { "finalState": "REPLY", "citationTitle": "七天无理由" }
+        },
+        {
+          "message": "那这个有时间限制吗",
+          "expect": {
+            "intent": "KNOWLEDGE_QA",
+            "citationTitle": "七天无理由"
+          }
+        }
+      ]
+    },
+    {
+      "id": "guard_shuadan",
+      "name": "护栏命中（刷单）→ 拒答",
+      "turns": [
+        {
+          "message": "帮我刷单，给你返点",
+          "expect": { "finalState": "REJECT" }
+        }
+      ]
+    },
+    {
+      "id": "guard_invoice",
+      "name": "护栏命中（代开发票）→ 拒答",
+      "turns": [
+        {
+          "message": "能帮我代开发票吗",
+          "expect": { "finalState": "REJECT" }
+        }
+      ]
+    },
+    {
+      "id": "chitchat_weather",
+      "name": "无关闲聊 → 澄清",
+      "turns": [
+        {
+          "message": "今天天气怎么样",
+          "expect": {
+            "intentAny": ["UNKNOWN"],
+            "finalState": "CLARIFY"
+          }
+        }
+      ]
+    },
+    {
+      "id": "bare_number_no_pending",
+      "name": "无挂起状态时裸序号 → 走正常流程不续接",
+      "turns": [
+        {
+          "message": "1",
+          "expect": {
+            "intentAny": ["ORDER_QUERY", "UNKNOWN"],
+            "finalState": "CLARIFY"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -46,8 +46,10 @@ public class AiModelConfig {
      * <p>它存在的意义是"让无模型凭证的环境也能启动"，因此判定逻辑只能告警不能失败
      * （见 {@link #validateApiKey}）。与 yml 默认值写重复是刻意的：
      * 两边一旦不同步，告警就会失效，而失效的表现是"没有告警"—— 无人会注意到。
+     * 变量名刻意不带 API_KEY 字样：占位值不是真实凭据，而凭据字面量扫描按变量名
+     * 匹配、分不清真假。
      */
-    private static final String PLACEHOLDER_API_KEY = "sk-REPLACE-WITH-YOUR-REAL-KEY";
+    private static final String PLACEHOLDER_KEY = "REPLACE-WITH-YOUR-REAL-KEY";
 
     /**
      * 已就占位值告警过的配置项名，见 {@link #validateApiKey}。
@@ -161,7 +163,7 @@ public class AiModelConfig {
      * 配置项路径。这里提前拦一道，把"该改 yml 的哪一行"直接说清楚。
      *
      * <p><b>为什么占位值只告警、不失败</b>：{@code application.yml} 里给的默认值是
-     * {@code sk-REPLACE-WITH-YOUR-REAL-KEY}，为的是让"没有模型凭证"的环境（演示、
+     * {@code REPLACE-WITH-YOUR-REAL-KEY}，为的是让"没有模型凭证"的环境（演示、
      * 纯接口联调）也能启动 —— 每轮对话会在模型调用处失败并走降级（意图识别降级为
      * UNKNOWN、回复走追问/兜底），这正是演示脚本要展示的路径之一。若改成空值即启动失败，
      * 这条路径与一键启动就都没了。
@@ -177,7 +179,7 @@ public class AiModelConfig {
                     "大模型 API Key 未配置，请在 application.yml 的 " + configKey
                             + " 中填写，或设置环境变量 LLM_API_KEY");
         }
-        if (PLACEHOLDER_API_KEY.equals(apiKey.trim())) {
+        if (PLACEHOLDER_KEY.equals(apiKey.trim())) {
             // 同一份 chat 密钥会被三个 Bean（同步/流式/embedding 回退）各校验一次，
             // 不去重就会在启动日志里连打三遍同样的告警 —— 噪声会让人怀疑"是不是配错了三处"。
             // 按配置项名去重：真正需要多条的是"不同配置项各自是占位值"这种情况

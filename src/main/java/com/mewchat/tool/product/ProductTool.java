@@ -1,5 +1,7 @@
 package com.mewchat.tool.product;
 
+import com.mewchat.dao.mysql.entity.Product;
+import com.mewchat.service.BusinessDataService;
 import com.mewchat.tool.BusinessTool;
 import com.mewchat.tool.ClarificationOption;
 import com.mewchat.tool.ToolResult;
@@ -12,7 +14,6 @@ import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,9 +32,11 @@ import java.util.Map;
  * 是一个自相矛盾的答复。{@code ProductToolTest} 里有一条断言专门钉住这一点：
  * 每个商品的类目都必须在退款政策里能查到具体政策，而不是落到"通用"。
  *
- * <p><b>当前是进程内模拟数据</b>（{@link #MOCK_PRODUCTS}）：真实场景下商品数据
- * 来自商品中心。接入时替换 {@link #queryProduct} 的取数实现即可 ——
- * 上游只依赖 {@link BusinessTool} 契约。
+ * <p><b>数据来自 {@link BusinessDataService}</b>（表 {@code product}，见 {@code sql/08}）。
+ * 关键词匹配（"耳机"→"无线蓝牙耳机 Pro"）刻意留在工具层、service 只给数据：
+ * 匹配规则是"用户的话怎么落到商品"这件事的一部分，与提示词、候选话术同属
+ * 工具对模型的契约，且有单测钉住；商品量大后应把匹配下推为 SQL 检索
+ * （见 service 侧说明），那时改的也只是取数方式。
  *
  * @author MewChat
  */
@@ -53,13 +56,8 @@ public class ProductTool implements BusinessTool {
 
     private static final Logger log = LoggerFactory.getLogger(ProductTool.class);
 
-    /**
-     * 模拟商品表，键为商品名。
-     *
-     * <p>商品名与订单里的商品名保持一致（同一件商品在两处必须叫同一个名字），
-     * 否则用户拿订单里的商品名来问价格会查不到。
-     */
-    private static final Map<String, ProductInfo> MOCK_PRODUCTS = buildMockProducts();
+    /** 商品取数入口（每次现读，见 service 侧说明） */
+    private final BusinessDataService businessDataService;
 
     /**
      * 关键词到商品名的映射，按关键词长度降序排好。
@@ -67,6 +65,9 @@ public class ProductTool implements BusinessTool {
      * <p><b>必须按长度降序</b>：匹配用的是"用户的话里是否含这个词"，
      * 而词之间有包含关系 —— 先撞上短的（"耳机"）就会把更具体的
      * （"无线蓝牙耳机 Pro"）抢走。这与退款类目别名踩过的是同一个坑。
+     *
+     * <p>值是商品名：命中关键词后仍要在当次取到的商品表里按名字查找 ——
+     * 商品下架/改名后关键词落空，宁可不命中也不给出查不到的商品。
      */
     private static final List<Map.Entry<String, String>> KEYWORDS_BY_LENGTH_DESC =
             buildKeywords().entrySet().stream()
@@ -74,10 +75,9 @@ public class ProductTool implements BusinessTool {
                             (Map.Entry<String, String> entry) -> entry.getKey().length()).reversed())
                     .toList();
 
-    /** 商品名按长度降序，用于"用户话里直接含商品全名"的匹配 */
-    private static final List<String> PRODUCT_NAMES_BY_LENGTH_DESC = MOCK_PRODUCTS.keySet().stream()
-            .sorted(Comparator.comparingInt(String::length).reversed())
-            .toList();
+    public ProductTool(BusinessDataService businessDataService) {
+        this.businessDataService = businessDataService;
+    }
 
     @Override
     public String name() {
@@ -127,23 +127,48 @@ public class ProductTool implements BusinessTool {
         String raw = query.productName().trim();
 
         // ① 原名或全名直接命中：用户把订单里的商品名原样发过来是最常见的情况
-        ProductInfo exact = MOCK_PRODUCTS.get(raw);
+        Product exact = businessDataService.findProductByName(raw);
         if (exact != null) {
-            return exact;
-        }
-        for (String productName : PRODUCT_NAMES_BY_LENGTH_DESC) {
-            if (raw.contains(productName)) {
-                return MOCK_PRODUCTS.get(productName);
-            }
+            return fromEntity(exact);
         }
 
-        // ② 按关键词命中："耳机""键盘""T 恤"这类不完整的说法要能落到具体商品上
-        for (Map.Entry<String, String> entry : KEYWORDS_BY_LENGTH_DESC) {
-            if (raw.contains(entry.getKey())) {
-                return MOCK_PRODUCTS.get(entry.getValue());
+        // ② 按关键词命中："耳机""键盘""T 恤"这类不完整的说法要能落到具体商品上。
+        // 全名与关键词都基于当次取到的商品表匹配：先长后短（全名比关键词更具体），
+        // 与退款类目别名是同一个坑的同一套处理
+        Map<String, ProductInfo> products = loadProducts();
+        String hit = null;
+        for (String productName : products.keySet().stream()
+                .sorted(Comparator.comparingInt(String::length).reversed())
+                .toList()) {
+            if (raw.contains(productName)) {
+                hit = productName;
+                break;
             }
         }
-        return null;
+        if (hit == null) {
+            for (Map.Entry<String, String> entry : KEYWORDS_BY_LENGTH_DESC) {
+                if (raw.contains(entry.getKey())) {
+                    hit = entry.getValue();
+                    break;
+                }
+            }
+        }
+        // 关键词指向的商品不在表里（下架/改名）：hit 落空按"没查到"处理，
+        // 绝不拿旧名字硬凑一个结果
+        return hit == null ? null : products.get(hit);
+    }
+
+    /**
+     * 取全量商品并转成"商品名 → 出参"的表。
+     *
+     * @return 商品名到出参的映射，商品表为空时是空映射
+     */
+    private Map<String, ProductInfo> loadProducts() {
+        Map<String, ProductInfo> products = new LinkedHashMap<>();
+        for (Product entity : businessDataService.listAllProducts()) {
+            products.put(entity.getProductName(), fromEntity(entity));
+        }
+        return products;
     }
 
     /**
@@ -161,8 +186,9 @@ public class ProductTool implements BusinessTool {
      */
     @Override
     public List<ClarificationOption> listOptions(Long userId) {
-        return MOCK_PRODUCTS.values().stream()
-                .filter(ProductInfo::onSale)
+        return businessDataService.listAllProducts().stream()
+                .filter(product -> Boolean.TRUE.equals(product.getOnSale()))
+                .map(ProductTool::fromEntity)
                 .map(product -> new ClarificationOption(
                         product.productName(),
                         product.productName() + "（" + product.category() + "，¥"
@@ -171,42 +197,21 @@ public class ProductTool implements BusinessTool {
     }
 
     /**
-     * 构造模拟商品数据。
+     * 数据库实体 → 工具出参。
      *
-     * <p>覆盖多个类目、并刻意留一个缺货商品：让"还有货吗"能答出否定结果 ——
-     * 全是"有货"的样例数据会让缺货分支永远测不到，而缺货恰恰是客服场景里
-     * 最容易引发投诉的一类问题。
+     * <p>转换放在工具层而不是 service，理由同订单工具：出参是工具的契约表达。
      *
-     * @return 不可变的商品表
+     * @param entity 数据库商品实体
+     * @return 工具出参对象
      */
-    private static Map<String, ProductInfo> buildMockProducts() {
-        Map<String, ProductInfo> products = new LinkedHashMap<>();
-
-        products.put("无线蓝牙耳机 Pro", new ProductInfo(
-                "无线蓝牙耳机 Pro", "数码配件", new BigDecimal("499.00"),
-                "蓝牙 5.3 / 主动降噪 / 单次续航 8 小时（含仓 30 小时）", 128, true));
-
-        products.put("机械键盘 87 键", new ProductInfo(
-                "机械键盘 87 键", "数码配件", new BigDecimal("399.00"),
-                "87 键 / 茶轴 / 有线 + 2.4G 双模 / PBT 键帽", 46, true));
-
-        products.put("便携充电宝 10000mAh", new ProductInfo(
-                "便携充电宝 10000mAh", "数码配件", new BigDecimal("129.00"),
-                "10000mAh / 22.5W 快充 / 支持双向充电 / 可登机", 0, false));
-
-        products.put("智能保温杯 500ml", new ProductInfo(
-                "智能保温杯 500ml", "家具家电", new BigDecimal("258.00"),
-                "500ml / 316 不锈钢内胆 / 触控显温 / 保温 12 小时", 75, true));
-
-        products.put("纯棉圆领 T 恤", new ProductInfo(
-                "纯棉圆领 T 恤", "服饰鞋包", new BigDecimal("89.00"),
-                "100% 精梳棉 / 男女同款 / S-XXL / 5 色可选", 312, true));
-
-        products.put("云南普洱熟茶 357g", new ProductInfo(
-                "云南普洱熟茶 357g", "食品生鲜", new BigDecimal("168.00"),
-                "357g 七子饼 / 五年陈 / 独立包装", 58, true));
-
-        return Collections.unmodifiableMap(products);
+    private static ProductInfo fromEntity(Product entity) {
+        return new ProductInfo(
+                entity.getProductName(),
+                entity.getCategory(),
+                entity.getPrice(),
+                entity.getSpec(),
+                entity.getStock(),
+                Boolean.TRUE.equals(entity.getOnSale()));
     }
 
     /**
@@ -314,14 +319,5 @@ public class ProductTool implements BusinessTool {
             data.put("onSale", onSale);
             return data;
         }
-    }
-
-    /**
-     * 供测试与排查使用：当前模拟商品的全部名称。
-     *
-     * @return 商品名列表（按录入顺序）
-     */
-    public static List<String> allProductNames() {
-        return new ArrayList<>(MOCK_PRODUCTS.keySet());
     }
 }

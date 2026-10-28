@@ -43,4 +43,21 @@ public interface ChatStreamListener {
      */
     default void onFragment(String fragment) {
     }
+
+    /**
+     * 用户是否已经离开（客户端断开/主动停止）。
+     *
+     * <p>编排层在每个状态执行前查询它：已离开就中止后续流程 ——
+     * 用户都走了还把补检索、回复生成、兜底建单跑完，token 与数据库写入全是浪费，
+     * 而兜底建单更是把"用户主动停止"错记成"系统答不上来"，污染数据飞轮。
+     *
+     * <p>默认 false：非流式场景没有"离开"的概念，流程必须跑完。
+     * 实现方必须保证线程安全（模型回调线程与请求线程并发），
+     * 且一旦返回 true 就永远返回 true（离开是不可逆的）。
+     *
+     * @return true 表示用户已断开，编排层应中止后续流程
+     */
+    default boolean isCancelled() {
+        return false;
+    }
 }

@@ -299,7 +299,10 @@ public class ReplyNode implements ChatNode {
         fillTokenUsage(context, usage);
         log.debug("回复生成完成：session={} 长度={} tokens={}",
                 context.getSessionId(), text.length(), context.getTotalTokens());
-        return ChatState.END;
+        // 多意图轮里这一段只是"一段"的终点：去聚合（收集本段 + 处理下一段 + 收尾），
+        // 单意图轮直接结束 —— 判据是"本轮是多意图轮"而不是"队列是否还有剩余"，
+        // 否则最后一段会绕过聚合、各段永远拼不起来
+        return context.isMultiIntentTurn() ? ChatState.AGGREGATE : ChatState.END;
     }
 
     /**

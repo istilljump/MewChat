@@ -40,6 +40,7 @@ public class ClarifyNode implements ChatNode {
         context.setReplyText(StringUtils.hasText(hint) ? hint : DEFAULT_CLARIFY);
 
         log.debug("追问用户：session={} 缺口={}", context.getSessionId(), hint);
-        return ChatState.END;
+        // 多意图轮里追问只是一段的终点，去聚合下一段（见 AGGREGATE）
+        return context.isMultiIntentTurn() ? ChatState.AGGREGATE : ChatState.END;
     }
 }

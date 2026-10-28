@@ -151,6 +151,10 @@ class BusinessToolInvokerTest {
      */
     private void assertStartupFailureContaining(String expectedText, Class<?>... toolClasses) {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // 工具经 service 取数，这里注册桩：让校验失败的原因落在"工具校验"上，
+            // 而不是缺依赖
+            context.registerBean(com.mewchat.service.BusinessDataService.class,
+                    com.mewchat.support.BusinessDataStub::of);
             for (Class<?> toolClass : toolClasses) {
                 context.register(toolClass);
             }
@@ -171,6 +175,9 @@ class BusinessToolInvokerTest {
      */
     private AnnotationConfigApplicationContext toolContext() {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+        // 工具已改为经 service 取数：注册内存桩（与种子数据同一份值），保持不连库的测试前提
+        context.registerBean(com.mewchat.service.BusinessDataService.class,
+                com.mewchat.support.BusinessDataStub::of);
         context.register(OrderTool.class, LogisticsTool.class, RefundTool.class,
                 ProductTool.class, BusinessToolInvoker.class);
         context.refresh();

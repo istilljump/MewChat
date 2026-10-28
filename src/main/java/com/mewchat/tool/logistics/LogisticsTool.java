@@ -1,5 +1,7 @@
 package com.mewchat.tool.logistics;
 
+import com.mewchat.dao.mysql.entity.Logistics;
+import com.mewchat.service.BusinessDataService;
 import com.mewchat.tool.BusinessTool;
 import com.mewchat.tool.ClarificationOption;
 import com.mewchat.tool.ToolResult;
@@ -15,7 +17,6 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,13 +30,13 @@ import java.util.Map;
  * 运单号优先。
  *
  * <p><b>订单号能查物流，靠的是订单上的运单号</b>：{@link #resolveTrackingNo} 通过
- * {@link OrderTool} 把订单号换成运单号。这里是工具之间的依赖，而不是在物流的模拟数据里
+ * {@link OrderTool} 把订单号换成运单号。这里是工具之间的依赖，而不是在物流数据里
  * 再抄一份"订单号 → 运单号"的映射 —— 两份映射迟早会不一致，
- * 而"按订单号查到的运单号"永远以订单为准才是对的。真实接入时这里换成订单查询服务，
- * 结构与依赖方向都不变。
+ * 而"按订单号查到的运单号"永远以订单为准才是对的。
  *
- * <p><b>当前是进程内模拟数据</b>（{@link #MOCK_LOGISTICS}）：真实场景下物流轨迹来自
- * 快递公司的查询接口（或对接的物流聚合服务），接入时替换 {@link #queryLogistics} 的取数实现。
+ * <p><b>数据来自 {@link BusinessDataService}</b>（表 {@code logistics}，见 {@code sql/08}）：
+ * 真实场景下物流轨迹来自快递公司的查询接口（或对接的物流聚合服务），
+ * 届时替换 service 实现的数据来源即可，工具侧的结构与依赖方向都不变。
  *
  * @author MewChat
  */
@@ -51,18 +52,15 @@ public class LogisticsTool implements BusinessTool {
     private static final DateTimeFormatter SUMMARY_TIME_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    /**
-     * 模拟物流数据，键为运单号。
-     *
-     * <p>轨迹按<b>时间倒序</b>存放（最新的在前）：物流查询永远只关心"现在到哪了"，
-     * 按时间正序存放则每次取"最新"都要遍历一遍并承担顺序写错的风险。
-     */
-    private static final Map<String, LogisticsInfo> MOCK_LOGISTICS = buildMockLogistics();
+    /** 物流取数入口（轨迹列表按时间倒序存放，第一条即最新） */
+    private final BusinessDataService businessDataService;
 
+    /** 订单号 → 运单号的换算走订单工具（其取数同样来自 service） */
     private final OrderTool orderTool;
 
-    public LogisticsTool(OrderTool orderTool) {
+    public LogisticsTool(OrderTool orderTool, BusinessDataService businessDataService) {
         this.orderTool = orderTool;
+        this.businessDataService = businessDataService;
     }
 
     @Override
@@ -174,7 +172,30 @@ public class LogisticsTool implements BusinessTool {
         if (query == null || !StringUtils.hasText(query.trackingNo())) {
             return null;
         }
-        return MOCK_LOGISTICS.get(query.trackingNo().trim());
+        Logistics logistics = businessDataService.findLogisticsByTrackingNo(query.trackingNo().trim());
+        return logistics == null ? null : fromEntity(logistics);
+    }
+
+    /**
+     * 数据库实体 → 工具出参。
+     *
+     * <p>转换放在工具层而不是 service，理由同订单工具：{@link LogisticsInfo}
+     * 是工具对模型与接口层的契约表达，service 返回的是存储表达。
+     *
+     * @param logistics 数据库物流实体
+     * @return 工具出参对象
+     */
+    private static LogisticsInfo fromEntity(Logistics logistics) {
+        List<LogisticsTrace> traces = logistics.getTraces() == null ? List.of()
+                : logistics.getTraces().stream()
+                        .map(trace -> new LogisticsTrace(trace.getTime(), trace.getDescription()))
+                        .toList();
+        return new LogisticsInfo(
+                logistics.getTrackingNo(),
+                logistics.getCarrier(),
+                logistics.getStatus(),
+                logistics.getEstimatedDeliveryTime(),
+                traces);
     }
 
     /**
@@ -223,50 +244,6 @@ public class LogisticsTool implements BusinessTool {
         return data;
     }
 
-    /**
-     * 构造模拟物流数据。
-     *
-     * <p>与模拟订单保持一致的三种形态：运输中、待揽收（商家已录单未发货）、已签收。
-     *
-     * @return 不可变的物流表
-     */
-    private static Map<String, LogisticsInfo> buildMockLogistics() {
-        Map<String, LogisticsInfo> logistics = new LinkedHashMap<>();
-
-        logistics.put("SF1234567890", new LogisticsInfo(
-                "SF1234567890", "顺丰速运", "运输中",
-                LocalDateTime.of(2024, 9, 25, 18, 0),
-                List.of(
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 23, 8, 15),
-                                "快件已到达【杭州西湖集散中心】"),
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 22, 21, 40),
-                                "快件已从【南京转运中心】发出，下一站【杭州西湖集散中心】"),
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 22, 15, 20),
-                                "顺丰速运已收取快件"))));
-
-        logistics.put("ZT9876543210", new LogisticsInfo(
-                "ZT9876543210", "中通快递", "待揽收",
-                LocalDateTime.of(2024, 9, 26, 18, 0),
-                List.of(
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 22, 9, 40),
-                                "商家已打印运单，等待快递员上门揽收"))));
-
-        logistics.put("YT5566778899", new LogisticsInfo(
-                "YT5566778899", "圆通速递", "已签收",
-                null,
-                List.of(
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 13, 16, 22),
-                                "快件已签收，签收人：本人"),
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 13, 9, 5),
-                                "快件正在派送中，派送员正在为您派送"),
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 12, 19, 30),
-                                "快件已到达【深圳南山网点】"),
-                        new LogisticsTrace(LocalDateTime.of(2024, 9, 11, 10, 12),
-                                "圆通速递已收取快件"))));
-
-        return Collections.unmodifiableMap(logistics);
-    }
-
     /* ==================== 入参 / 出参 ==================== */
 
     /**
@@ -299,7 +276,8 @@ public class LogisticsTool implements BusinessTool {
      *
      * <p><b>最新轨迹不单独存字段</b>，而是由 {@link #latestTrace()} 从轨迹列表取第一条：
      * 存两份迟早会出现"最新轨迹"与"轨迹明细第一条"互相矛盾的情况，
-     * 而排查这种矛盾要翻两处代码。倒序存放（见 {@link #MOCK_LOGISTICS}）让取第一条即最新。
+     * 而排查这种矛盾要翻两处代码。轨迹按时间倒序存放（约定见实体 {@code Logistics}），
+     * 取第一条即最新。
      *
      * @param trackingNo            运单号
      * @param carrier               承运商

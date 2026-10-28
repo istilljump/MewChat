@@ -112,7 +112,178 @@ public class FakeOpenAi {
             streamReply(exchange, body);
             return;
         }
+        // 模型自主选工具（Function Calling）：请求体带 tools 数组，走工具调用协议。
+        // 用 "\"tools\":[{" 这个序列判别：提示词文本里的引号都是转义的，
+        // 正常的提示词内容不会出现这个形态
+        if (compact(body).contains("\"tools\":[{")) {
+            jsonToolLoopReply(exchange, body);
+            return;
+        }
+        // LLM 重排（阶段 28）：重排提示词带专属标记，要求返回 JSON 打分数组。
+        // 必须放在意图识别之前 —— 重排提示词里也有"问题""片段"这些词，
+        // 落进意图分支会返回意图 JSON，应用侧重排解析失败而静默降级。
+        // 标记在 userMessage() 提取后的文本上判断：那段文本已还原过转义序列，
+        // 对"应用直发原始 UTF-8"与"调用方把中文转成 Unicode 转义"两种形态都成立
+        String plainBody = userMessage(body);
+        if (plainBody.contains("【重排任务】")) {
+            json(exchange, rerankScores(plainBody));
+            return;
+        }
         json(exchange, intent(body));
+    }
+
+    /**
+     * LLM 重排请求的应答（阶段 28）：按候选给出"保序降分"。
+     *
+     * <p>候选数从提示词里的"片段N"标记数出来；分数按名次递减 —— 这是
+     * "保序重排"最忠实的实现：融合序里谁在前谁分就高，等于让重排不改变结论。
+     * 真模型下才会按语义真正打分。评测基线（18/18）在两种重排模式下都应保持，
+     * 差别只在检索日志的"重排器"一行与重排耗时。
+     *
+     * @param plainBody 已还原转义的用户消息文本
+     * @return JSON 数组文本，形如 [{"i":1,"score":0.95},...]
+     */
+    private static String rerankScores(String plainBody) {
+        int count = 0;
+        while (plainBody.contains("片段" + (count + 1))) {
+            count++;
+        }
+        StringBuilder array = new StringBuilder("[");
+        for (int i = 1; i <= count; i++) {
+            double score = Math.max(0.10, 0.95 - (i - 1) * 0.05);
+            if (i > 1) {
+                array.append(',');
+            }
+            array.append("{\"i\":").append(i).append(",\"score\":").append(score).append('}');
+        }
+        return array.append(']').toString();
+    }
+
+    /**
+     * 工具调用循环的应答：第一轮决定调哪些工具，拿到工具结果后汇总事实。
+     *
+     * <p>决策口径与 {@link #intent(String)} 一致 —— 只看用户那句话：
+     * 话里带订单号就<b>同时</b>调订单与物流（这是"组合工具"演示的核心场景，
+     * 单意图查表路径做不到），带商品关键词就查商品，都没有就返回纯文本
+     * （应用侧会因"模型没选工具"降级回意图查表路径，这也是要演示的降级行为）。
+     *
+     * @param exchange HTTP 交换对象
+     * @param body     完整请求体
+     * @throws IOException 写响应失败时抛出
+     */
+    private static void jsonToolLoopReply(HttpExchange exchange, String body) throws IOException {
+        // LangChain4j 发出的请求是带空格的 pretty JSON（"role" : "tool"），
+        // 逐字段查找必须先压掉空白，否则 role/content 全都匹配不到 ——
+        // 实测表现为：循环每轮都收到 tool_calls、摘要永远提不出来
+        body = compact(body);
+        // 循环第二轮起，请求里会有工具结果消息（role=tool）：把它们的原文汇总作为事实摘要
+        String toolFacts = collectToolContents(body);
+        if (!toolFacts.isEmpty()) {
+            json(exchange, toolFacts);
+            return;
+        }
+
+        String user = userMessage(body);
+        // 工具名与项目里的常量（OrderTool.NAME 等）保持一致：本工具刻意不依赖项目类，
+        // 只能写字面量 —— 项目改工具名时这里要跟着改（name() 的唯一来源仍是常量）
+        if (user.contains("MC2024")) {
+            String orderNo = user.contains("MC202409240001") ? "MC202409240001" : "MC202409240001";
+            jsonToolCalls(exchange, List.of(
+                    new String[]{"order_query", "{\"orderNo\":\"" + orderNo + "\"}"},
+                    new String[]{"logistics_query", "{\"orderNo\":\"" + orderNo + "\"}"}));
+            return;
+        }
+        if (user.contains("耳机") || user.contains("键盘") || user.contains("保温杯")
+                || user.contains("多少钱") || user.contains("价格") || user.contains("有货")) {
+            String product = user.contains("保温杯") ? "保温杯" : "耳机";
+            jsonToolCalls(exchange, List.<String[]>of(
+                    new String[]{"product_query", "{\"productName\":\"" + product + "\"}"}));
+            return;
+        }
+        // 没有合适的工具可调：返回纯文本，应用侧据此降级回查表路径
+        json(exchange, "（假端点：这轮没有可调的工具）");
+    }
+
+    /**
+     * 收集请求体里全部工具结果消息的文本，用空行拼接。
+     *
+     * @param body 完整请求体
+     * @return 工具结果原文；没有工具结果时返回空串
+     */
+    private static String collectToolContents(String body) {
+        StringBuilder facts = new StringBuilder();
+        int index = 0;
+        while ((index = body.indexOf("\"role\":\"tool\"", index)) >= 0) {
+            int contentKey = body.indexOf("\"content\"", index);
+            if (contentKey < 0) {
+                break;
+            }
+            facts.append(readJsonString(body, contentKey)).append("\n\n");
+            index = contentKey;
+        }
+        return facts.toString().trim();
+    }
+
+    /**
+     * 读取请求体中指定 content 键后面的 JSON 字符串值（还原转义）。
+     *
+     * @param body          请求体
+     * @param contentKeyIdx "content" 键的下标
+     * @return 字符串值；解析失败返回空串
+     */
+    private static String readJsonString(String body, int contentKeyIdx) {
+        try {
+            int quote = body.indexOf('"', body.indexOf(':', contentKeyIdx) + 1);
+            StringBuilder text = new StringBuilder();
+            for (int i = quote + 1; i < body.length(); i++) {
+                char c = body.charAt(i);
+                if (c == '"') {
+                    return text.toString();
+                }
+                if (c == '\\') {
+                    char escaped = body.charAt(++i);
+                    switch (escaped) {
+                        case 'n' -> text.append('\n');
+                        case 'r' -> text.append('\r');
+                        case 't' -> text.append('\t');
+                        case '"' -> text.append('"');
+                        case '\\' -> text.append('\\');
+                        default -> text.append(escaped);
+                    }
+                } else {
+                    text.append(c);
+                }
+            }
+        } catch (Exception ignore) {
+            // 解析失败按空串处理：宁可摘要缺失，也不能让请求失败
+        }
+        return "";
+    }
+
+    /**
+     * 以"携带 tool_calls 的助手消息"应答。
+     *
+     * @param exchange HTTP 交换对象
+     * @param calls    工具名与参数 JSON 的二元组列表
+     * @throws IOException 写响应失败时抛出
+     */
+    private static void jsonToolCalls(HttpExchange exchange, List<String[]> calls) throws IOException {
+        StringBuilder toolCalls = new StringBuilder("[");
+        for (int i = 0; i < calls.size(); i++) {
+            if (i > 0) {
+                toolCalls.append(',');
+            }
+            toolCalls.append("{\"id\":\"call_").append(i).append("\",\"type\":\"function\",")
+                    .append("\"function\":{\"name\":\"").append(calls.get(i)[0])
+                    .append("\",\"arguments\":\"").append(escape(calls.get(i)[1])).append("\"}}");
+        }
+        toolCalls.append(']');
+
+        String completion = "{\"id\":\"chatcmpl-fake\",\"object\":\"chat.completion\",\"created\":1,"
+                + "\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+                + "\"content\":null,\"tool_calls\":" + toolCalls + "},\"finish_reason\":\"tool_calls\"}],"
+                + "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":30,\"total_tokens\":130}}";
+        writeJson(exchange, completion);
     }
 
     /**
@@ -188,6 +359,29 @@ public class FakeOpenAi {
         }
         if (!body.contains(INTENT_MARK)) {
             return "{}";
+        }
+
+        // 多意图模式（阶段 29）：多意图的意图提示词带专属标记（MULTI_INTENT_SUFFIX）。
+        // 只对"组合问题"返回 intents 数组 —— 单问题即使处在多意图模式也保持单对象
+        // （应用侧对两种形态都能解析），这样"单问题在多意图模式下"的行为
+        // 与单意图模式逐字一致，评测基线在两种模式下都应保持。
+        // 组合信号的匹配必须只看"用户当前输入"：提示词规则原文里就带着
+        // "耳机""多少钱"这些词，拿整段匹配会让每条提问都命中本分支
+        // （与 fragmentsFor 的教训同源，见该处注释）
+        if (body.contains("【多意图模式】")) {
+            String multiInput = currentInput(body);
+            if (multiInput.isEmpty()) {
+                multiInput = userMessage(body);
+            }
+            if (multiInput.contains("MC2024")
+                    && (multiInput.contains("耳机") || multiInput.contains("多少钱"))) {
+                return "{\"intents\":["
+                        + json("ORDER_QUERY", "0.90", "查询订单 MC202409240001 的状态",
+                                ",\"orderNo\":\"MC202409240001\"")
+                        + ","
+                        + json("PRODUCT_QUERY", "0.88", "耳机多少钱", "")
+                        + "]}";
+            }
         }
 
         // 只在"用户当前输入"里匹配关键词：意图识别的提示词里带着【最近对话】，
@@ -405,13 +599,17 @@ public class FakeOpenAi {
      * @return 分片列表
      */
     private static List<String> fragmentsFor(String prompt) {
-        // 商品工具：出参里有"库存："（订单工具没有这个字段）
+        // 商品工具：出参里有"库存："（订单工具没有这个字段）。
+        // 库存值从提示词里提取后原样回显（阶段 27 起工具数据在真库上，
+        // 运营改库存后这里必须跟着变 —— 写死一个数会让"工具事实进了提示词"
+        // 退化成"看起来进了提示词"）
         if (prompt.contains("库存：")) {
+            String stock = cut(lineValue(prompt, "库存："), " 件");
             if (prompt.contains("499.00")) {
-                return List.of("无线蓝牙耳机 Pro", "售价 499 元，", "库存 128 件，现货充足。");
+                return List.of("无线蓝牙耳机 Pro", "售价 499 元，", "库存 " + stock + "，现货充足。");
             }
             if (prompt.contains("258.00")) {
-                return List.of("智能保温杯 500ml", "售价 258 元，", "库存 75 件，现货充足。");
+                return List.of("智能保温杯 500ml", "售价 258 元，", "库存 " + stock + "，现货充足。");
             }
             return List.of("这件商品目前在售，", "价格与库存以商品工具返回的结果为准。");
         }
@@ -506,6 +704,17 @@ public class FakeOpenAi {
                 + "\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
                 + "\"content\":\"" + escape(payload) + "\"},\"finish_reason\":\"stop\"}],"
                 + "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":30,\"total_tokens\":130}}";
+        writeJson(exchange, completion);
+    }
+
+    /**
+     * 写出一段完整的 chat.completion JSON 响应。
+     *
+     * @param exchange  HTTP 交换对象
+     * @param completion 响应体（已构造好的 JSON 文本）
+     * @throws IOException 写响应失败时抛出
+     */
+    private static void writeJson(HttpExchange exchange, String completion) throws IOException {
         byte[] bytes = completion.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, bytes.length);

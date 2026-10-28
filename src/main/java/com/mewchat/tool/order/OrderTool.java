@@ -1,5 +1,7 @@
 package com.mewchat.tool.order;
 
+import com.mewchat.dao.mysql.entity.Order;
+import com.mewchat.service.BusinessDataService;
 import com.mewchat.tool.BusinessTool;
 import com.mewchat.tool.ClarificationOption;
 import com.mewchat.tool.ToolResult;
@@ -13,7 +15,6 @@ import org.springframework.util.StringUtils;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,10 +31,10 @@ import java.util.Map;
  * 让模型"顺手"生成业务数据是这类系统里最危险的写法 —— 它会用看起来完全合理的
  * 数字和状态编造一个不存在的订单，而用户无从分辨。
  *
- * <p><b>当前是进程内模拟数据</b>（{@link #MOCK_ORDERS}）：本机数据库里没有订单表，
- * 真实场景下订单数据来自交易系统的接口。接入时替换 {@link #queryOrder} 的取数实现即可 ——
+ * <p><b>数据来自 {@link BusinessDataService}</b>（表 {@code orders}，见 {@code sql/08}）：
+ * 取数封装在 service 层是分层约定的要求，工具只负责"参数校验 → 取数 → 组织出参"。
+ * 真实场景下订单数据来自交易系统，届时替换 service 实现的数据来源即可 ——
  * 上游只依赖 {@link BusinessTool} 契约，按工具名调用，不认识订单数据从哪来。
- * 届时按分层约定把取数封装到 {@code service} 层，工具类改为注入该服务。
  *
  * @author MewChat
  */
@@ -55,25 +56,21 @@ public class OrderTool implements BusinessTool {
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /**
-     * 模拟订单的归属用户ID（演示用）。
+     * 演示/联调数据的归属用户ID。
      *
-     * <p>模拟数据必须带归属信息，否则 {@link #listOptions(Long)} 的过滤无从生效 ——
-     * 一个"有过滤但永远匹配不上"的实现，和一个"根本没过滤"的实现，
-     * 在有真实数据后会表现出完全不同的行为：前者继续保持安全，后者立刻开始泄露。
-     * 把归属写进数据里，过滤这条路径才真的被走到、也才能被测试覆盖。
-     *
-     * <p>取值与测试里用的用户ID一致，本地联调时用该身份登录就能看到候选订单列表。
+     * <p>与种子数据（{@code sql/09}）的 {@code owner_user_id} 以及演示账号
+     * （{@code sql/06}，用户名 alice）一致。候选订单必须按归属过滤，
+     * 把归属钥匙写进种子数据，"按用户过滤"这条路径才真的被走到、也才能被测试覆盖：
+     * 换一个 userId 就得到空列表，而不是"看起来过滤了、实际返回全部"。
      */
     public static final long DEMO_OWNER_USER_ID = 1727138400000000001L;
 
-    /**
-     * 模拟订单数据，键为订单号。
-     *
-     * <p>收件人姓名与手机号在数据里<b>本身就是脱敏的</b>：客服场景不需要完整的
-     * 个人信息，更不该把它送进模型提示词或接口响应 —— 一旦进了提示词，
-     * 就等于把用户隐私交给了第三方模型服务商。
-     */
-    private static final Map<String, OrderInfo> MOCK_ORDERS = buildMockOrders();
+    /** 数据访问入口。工具不做任何缓存：单条等值查询走唯一索引足够快，缓存反而引入一致性问题 */
+    private final BusinessDataService businessDataService;
+
+    public OrderTool(BusinessDataService businessDataService) {
+        this.businessDataService = businessDataService;
+    }
 
     @Override
     public String name() {
@@ -115,7 +112,8 @@ public class OrderTool implements BusinessTool {
         if (query == null || !StringUtils.hasText(query.orderNo())) {
             return null;
         }
-        return MOCK_ORDERS.get(query.orderNo().trim());
+        Order order = businessDataService.findOrderByNo(query.orderNo().trim());
+        return order == null ? null : fromEntity(order);
     }
 
     /**
@@ -127,26 +125,43 @@ public class OrderTool implements BusinessTool {
      * "麻烦提供一下订单号"，功能少一截，但不会泄露任何数据。
      * <b>宁可少列，也不能多列。</b>
      *
-     * <p>模拟数据把三条示例订单都挂在 {@link #DEMO_OWNER_USER_ID} 名下，
-     * 于是过滤是真的在生效（换一个 userId 就得到空列表），
-     * 而不是"看起来过滤了、实际返回全部"。真实实现应从订单系统按归属查询，
+     * <p>过滤条件是硬性的：拿不到"属于当前用户"的订单就返回空列表 ——
+     * 上层会退化成不带候选的"麻烦提供一下订单号"，功能少一截，但不会泄露任何数据。
+     * <b>宁可少列，也不能多列。</b>种子数据把示例订单都挂在
+     * {@link #DEMO_OWNER_USER_ID} 名下，于是过滤是真的在生效
+     * （换一个 userId 就得到空列表）。真实接入后取数换成订单系统按归属查询，
      * 绝不允许退化成"查不到归属就返回全部"。
      *
-     * @param userId 当前登录用户ID；为空（游客）时返回空列表
-     * @return 候选项列表，只含属于该用户的订单
+     * 澄清候选填的参数名：候选值是订单号，用户回复序号后由续接逻辑填进 orderNo。
      */
     @Override
     public String clarificationParam() {
         return "orderNo";
     }
 
+    /**
+     * 列出可选的订单，供"缺订单号"时的澄清追问使用。
+     *
+     * <p><b>必须按 userId 过滤。</b> 列出别人的订单不是体验问题，而是泄露他人的交易信息
+     * （订单号 + 商品 + 状态足够拼出"某人买了什么"）。
+     *
+     * <p>过滤条件是硬性的：拿不到"属于当前用户"的订单就返回空列表 ——
+     * 上层会退化成不带候选的"麻烦提供一下订单号"，功能少一截，但不会泄露任何数据。
+     * <b>宁可少列，也不能多列。</b>种子数据把示例订单都挂在
+     * {@link #DEMO_OWNER_USER_ID} 名下，于是过滤是真的在生效
+     * （换一个 userId 就得到空列表）。真实接入后取数换成订单系统按归属查询，
+     * 绝不允许退化成"查不到归属就返回全部"。
+     *
+     * @param userId 当前登录用户ID；为空（游客）时返回空列表
+     * @return 候选项列表，只含属于该用户的订单
+     */
     @Override
     public List<ClarificationOption> listOptions(Long userId) {
         if (userId == null) {
             return List.of();
         }
-        return MOCK_ORDERS.values().stream()
-                .filter(order -> userId.equals(order.ownerUserId()))
+        return businessDataService.listOrdersByOwner(userId).stream()
+                .map(OrderTool::fromEntity)
                 .map(order -> new ClarificationOption(
                         order.orderNo(),
                         order.orderNo() + " " + order.productName() + "（" + order.status() + "）"))
@@ -154,46 +169,29 @@ public class OrderTool implements BusinessTool {
     }
 
     /**
-     * 构造模拟订单数据。
+     * 数据库实体 → 工具出参。
      *
-     * <p>订单号只覆盖后面几个业务场景要用的样例：一个在途、一个未发货、一个已签收，
-     * 这正好对应物流查询的三种典型回答。刻意不造"万能订单"，
-     * 否则"查不到单"这条分支永远测不到。
+     * <p>转换放在工具层而不是 service：{@link OrderInfo} 是"给模型与接口层看的表达"，
+     * 属于工具的契约；service 返回的是"存储的表达"。两边各管各的，
+     * 改出参字段不会牵动 service 的查询方法。
      *
-     * @return 不可变的订单表
+     * @param order 数据库订单实体
+     * @return 工具出参对象
      */
-    private static Map<String, OrderInfo> buildMockOrders() {
-        Map<String, OrderInfo> orders = new LinkedHashMap<>();
-
-        orders.put("MC202409240001", new OrderInfo(
-                "MC202409240001", DEMO_OWNER_USER_ID, "已发货", "无线蓝牙耳机 Pro", 1,
-                new BigDecimal("499.00"), LocalDateTime.of(2024, 9, 20, 14, 32, 10),
-                "浙江省杭州市西湖区文三路 100 号 1 幢 201 室", "张*", "138****8888",
-                "顺丰速运", "SF1234567890"));
-
-        orders.put("MC202409240002", new OrderInfo(
-                "MC202409240002", DEMO_OWNER_USER_ID, "待发货", "智能保温杯 500ml", 2,
-                new BigDecimal("258.00"), LocalDateTime.of(2024, 9, 22, 9, 15, 33),
-                "江苏省南京市鼓楼区中山北路 8 号 3 单元 602", "李*", "139****6666",
-                "中通快递", "ZT9876543210"));
-
-        orders.put("MC202409240003", new OrderInfo(
-                "MC202409240003", DEMO_OWNER_USER_ID, "已完成", "机械键盘 87 键", 1,
-                new BigDecimal("399.00"), LocalDateTime.of(2024, 9, 10, 20, 5, 47),
-                "广东省深圳市南山区科技园路 5 号 A 座 1203", "王*", "137****1234",
-                "圆通速递", "YT5566778899"));
-
-        // 尚未发货：没有承运商、也没有运单号。
-        // 这条数据是"订单查得到、但换不出运单号"那条分支唯一的入口 ——
-        // 缺了它，物流工具里"订单存在但未发货"的话术在真实数据接入前永远不会被执行到，
-        // 也就等于没被验证过
-        orders.put("MC202409240004", new OrderInfo(
-                "MC202409240004", DEMO_OWNER_USER_ID, "待发货", "便携充电宝 10000mAh", 1,
-                new BigDecimal("129.00"), LocalDateTime.of(2024, 9, 23, 18, 40, 5),
-                "北京市朝阳区建国路 88 号 5 号楼 801", "赵*", "136****5678",
-                null, null));
-
-        return Collections.unmodifiableMap(orders);
+    private static OrderInfo fromEntity(Order order) {
+        return new OrderInfo(
+                order.getOrderNo(),
+                order.getOwnerUserId(),
+                order.getStatus(),
+                order.getProductName(),
+                order.getQuantity(),
+                order.getAmount(),
+                order.getOrderTime(),
+                order.getReceiverAddress(),
+                order.getReceiverName(),
+                order.getReceiverPhone(),
+                order.getCarrier(),
+                order.getTrackingNo());
     }
 
     /* ==================== 入参 / 出参 ==================== */

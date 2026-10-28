@@ -142,6 +142,19 @@ public class BusinessToolInvoker implements ToolInvoker {
         return tool == null ? null : tool.clarificationParam();
     }
 
+    /**
+     * 携带 {@code @Tool} 注解方法的工具对象列表，供"模型自主选工具"路径生成工具契约。
+     *
+     * <p>注册表在启动时已校验过"每个工具至少有一个 @Tool 方法"（见 {@link #buildToolMap}），
+     * 因此这里的每个对象都能安全地交给 {@code ToolSpecifications.toolSpecificationsFrom}。
+     *
+     * @return 工具对象列表，保证非 null
+     */
+    @Override
+    public List<Object> toolContractObjects() {
+        return List.copyOf(toolMap.values());
+    }
+
     private Map<String, BusinessTool> buildToolMap(ObjectProvider<BusinessTool> toolProvider) {
         Map<String, BusinessTool> map = new LinkedHashMap<>();
         toolProvider.orderedStream().forEach(tool -> {

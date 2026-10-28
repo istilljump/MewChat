@@ -26,7 +26,7 @@
         role: 0,            // 1客户 2客服 3管理员，来自令牌 payload
         activeTab: '',
         tickets: { scope: 'all', status: '', page: 1, total: 0 },
-        conversations: { status: '', page: 1, total: 0 },
+        conversations: { status: '', feedback: '', page: 1, total: 0 },
         documents: { page: 1, total: 0 }
     };
 
@@ -558,6 +558,16 @@
         state.conversations.page = 1;
         loadConversations();
     });
+    document.getElementById('conv-feedback').addEventListener('change', function (event) {
+        // 反馈筛选与状态筛选互斥：选了反馈就按反馈列表展示（它们是两种不同的视图）
+        state.conversations.feedback = event.target.value;
+        if (state.conversations.feedback !== '') {
+            state.conversations.status = '';
+            document.getElementById('conv-status').value = '';
+        }
+        state.conversations.page = 1;
+        loadConversations();
+    });
     document.getElementById('conv-refresh').addEventListener('click', function () { loadConversations(); });
     document.getElementById('conv-prev').addEventListener('click', function () {
         if (state.conversations.page > 1) { state.conversations.page--; loadConversations(); }
@@ -567,6 +577,9 @@
     });
 
     async function loadConversations() {
+        if (state.conversations.feedback !== '') {
+            return loadFeedbackMessages();
+        }
         var list = document.getElementById('conv-list');
         list.innerHTML = '';
         list.appendChild(emptyHint('正在加载…'));
@@ -617,6 +630,64 @@
             list.appendChild(row);
         });
         renderPager('conv', state.conversations, page.total);
+    }
+
+    /**
+     * 反馈质量看板：按点赞/点踩筛选助手回答。
+     *
+     * <p>点踩密集的回答就是最真实的待优化清单 —— 这是"用户反馈进飞轮"的展示入口。
+     * 点击一行可打开完整会话，看回答当时错在哪。
+     */
+    async function loadFeedbackMessages() {
+        var list = document.getElementById('conv-list');
+        list.innerHTML = '';
+        list.appendChild(emptyHint('正在加载…'));
+
+        var view;
+        try {
+            view = await api('/api/admin/analytics/feedback-messages?feedback=' + state.conversations.feedback
+                + '&page=' + state.conversations.page + '&size=' + PAGE_SIZE);
+        } catch (e) {
+            list.innerHTML = '';
+            list.appendChild(emptyHint('加载失败：' + e.message));
+            return;
+        }
+
+        state.conversations.total = view.total;
+        list.innerHTML = '';
+        if (!view.records.length) {
+            list.appendChild(emptyHint(state.conversations.feedback === '2'
+                ? '还没有被点踩的回答 —— 用户当前都还满意'
+                : '还没有被点赞的回答'));
+        }
+        view.records.forEach(function (item) {
+            var row = document.createElement('div');
+            row.className = 'conv-row';
+            if (item.feedback === 2) { row.classList.add('conv-row-bad'); }
+            row.addEventListener('click', function () { showConversation(item.sessionId); });
+
+            var badge = document.createElement('span');
+            badge.className = 'badge';
+            badge.textContent = item.feedback === 2 ? '👎 无用' : '👍 有用';
+            row.appendChild(badge);
+
+            var title = document.createElement('span');
+            title.className = 'title';
+            title.textContent = item.question || '（取不到提问原文）';
+            title.title = item.question || '';
+            row.appendChild(title);
+
+            var meta = document.createElement('span');
+            meta.className = 'meta';
+            var answer = item.answer || '';
+            meta.textContent = '答：' + (answer.length > 60 ? answer.slice(0, 60) + '…' : answer)
+                + ' · ' + humanTime(item.feedbackTime);
+            meta.title = answer;
+            row.appendChild(meta);
+
+            list.appendChild(row);
+        });
+        renderPager('conv', state.conversations, view.total);
     }
 
     /**
@@ -858,6 +929,92 @@
         }
     });
 
+    /**
+     * AI 起草知识文档：对簇的代表问题请求模型起草，弹层里可编辑，
+     * 确认后走既有"录入文档 → 标记已优化"接口闭环。
+     *
+     * <p>草稿只是候选稿（模型产出可能有幻觉），所以弹层里的标题与正文都可编辑，
+     * 且入库动作由运营显式确认 —— 系统不替人做"发布"这个决定。
+     */
+    async function aiDraft(cluster) {
+        var questionId = cluster.questions && cluster.questions.length ? cluster.questions[0].id : null;
+        if (!questionId) {
+            toast('这个簇没有可起草的问题记录');
+            return;
+        }
+        toast('正在生成草稿…（通常需要几秒）');
+        var draftData;
+        try {
+            var full = await apiFull('/api/admin/analytics/questions/' + questionId + '/draft', { method: 'POST' });
+            draftData = full.data;
+        } catch (e) {
+            toast('生成失败：' + e.message);
+            return;
+        }
+
+        var form = document.createElement('div');
+        form.className = 'optimize-form';
+        var refs = (draftData.references && draftData.references.length)
+            ? '参考了知识库片段：《' + draftData.references.join('》《') + '》'
+            : '没有检索到相关片段 —— 正文中"（待人工确认）"的内容务必人工核实';
+        form.innerHTML = '<p class="hint">' + escapeHtml(refs) + '</p>'
+            + '<label>标题 <input id="draft-title" maxlength="200"></label>'
+            + '<label>正文（Markdown）<textarea id="draft-content" rows="10"></textarea></label>'
+            + '<label>分类 <input id="draft-category" maxlength="50" placeholder="如：售后"></label>'
+            + '<p class="hint">确认后：录入知识库 → 并把该簇的问题标记为已优化（清单收敛）。</p>';
+
+        var actions = document.createElement('div');
+        actions.style.marginTop = '12px';
+        var confirm = document.createElement('button');
+        confirm.type = 'button';
+        confirm.className = 'btn btn-primary';
+        confirm.textContent = '确认并入库';
+        actions.appendChild(confirm);
+        form.appendChild(actions);
+        openModal('🤖 AI 起草（请审核修改后入库）', form);
+
+        form.querySelector('#draft-title').value = draftData.title || cluster.representativeQuestion;
+        form.querySelector('#draft-content').value = draftData.content || '';
+        form.querySelector('#draft-category').value = '售后';
+
+        confirm.addEventListener('click', async function () {
+            var title = form.querySelector('#draft-title').value.trim();
+            var content = form.querySelector('#draft-content').value.trim();
+            if (!title || !content) { toast('标题与正文不能为空'); return; }
+            confirm.disabled = true;
+            try {
+                var created = await apiFull('/api/admin/knowledge/documents', {
+                    method: 'POST',
+                    body: {
+                        title: title,
+                        content: content,
+                        category: form.querySelector('#draft-category').value.trim() || null
+                    }
+                });
+                var docId = created.data;
+                // 把簇里的每个问题都标记已优化：清单按簇收敛 ——
+                // 漏标的话同一主题下次还会出现在清单上
+                var marked = 0;
+                for (var i = 0; i < cluster.questions.length; i++) {
+                    try {
+                        await api('/api/admin/analytics/questions/' + cluster.questions[i].id + '/optimize', {
+                            method: 'POST',
+                            // 字符串直传：19 位雪花ID 不能过 Number()（会静默丢精度）
+                            body: { knowledgeDocId: String(docId) }
+                        });
+                        marked++;
+                    } catch (e) { /* 单条失败不阻断其余的标记 */ }
+                }
+                toast((created.message || '已入库') + '；已标记 ' + marked + ' 条问题为已优化');
+                closeModal();
+                loadChecklist();
+            } catch (e) {
+                toast('入库失败：' + e.message);
+                confirm.disabled = false;
+            }
+        });
+    }
+
     async function loadChecklist() {
         var list = document.getElementById('cluster-list');
         var summary = document.getElementById('flywheel-summary');
@@ -919,6 +1076,15 @@
             toast('标题已带入，正文补完后回来标记已优化');
         });
         actions.appendChild(goDoc);
+
+        // AI 起草：让模型基于已有知识库片段起草候选文档，运营审核修改后入库 ——
+        // "补知识"从纯手写升级为 AI 起草 + 人工把关
+        var draft = document.createElement('button');
+        draft.type = 'button';
+        draft.className = 'btn btn-ghost';
+        draft.textContent = '🤖 AI 起草';
+        draft.addEventListener('click', function () { aiDraft(cluster); });
+        actions.appendChild(draft);
 
         // 展开成员：簇只是"字面相似"的归并，同义改写要靠人工确认
         var toggle = document.createElement('button');

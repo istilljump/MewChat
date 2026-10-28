@@ -60,4 +60,18 @@ public interface ToolInvoker {
     default String clarificationParam(String toolName) {
         return null;
     }
+
+    /**
+     * 取携带 {@code @Tool} 注解方法的工具对象列表，供"模型自主选工具"路径
+     * 生成对模型可见的工具契约（名称、用途、参数结构）。
+     *
+     * <p>默认为空列表：不启用模型选工具时，这个方法不会被调用。
+     * 放在接口上与 {@link #listOptions} 同理 —— 编排层只该认识这个接口，
+     * 不该向下强转注册表的具体实现。
+     *
+     * @return 工具对象列表；无契约对象时返回空列表，不应返回 null
+     */
+    default List<Object> toolContractObjects() {
+        return List.of();
+    }
 }

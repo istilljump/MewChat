@@ -21,6 +21,7 @@ import org.springframework.util.StringUtils;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -86,10 +87,14 @@ public class ToolSpecialist implements ChatNode {
 
     private final ConversationService conversationService;
 
+    private final ModelToolCallingService modelToolCallingService;
+
     public ToolSpecialist(ObjectProvider<ToolInvoker> toolInvokerProvider,
-                          ConversationService conversationService) {
+                          ConversationService conversationService,
+                          ModelToolCallingService modelToolCallingService) {
         this.toolInvokerProvider = toolInvokerProvider;
         this.conversationService = conversationService;
+        this.modelToolCallingService = modelToolCallingService;
     }
 
     @Override
@@ -100,6 +105,16 @@ public class ToolSpecialist implements ChatNode {
     @Override
     public ChatState execute(ChatContext context) {
         context.setHandlerAgent(getClass().getSimpleName());
+
+        // 优先让模型自主选工具（支持一次组合多个工具）；任何"没走通"
+        // （未启用/模型不选工具/超轮数/异常）都返回 null，落回下面的查表路径。
+        // 两条路径共享同一套 ToolInvoker 与 ToolResult 语义，下游无感。
+        if (modelToolCallingService.enabled()) {
+            ChatState handled = executeWithModel(context);
+            if (handled != null) {
+                return handled;
+            }
+        }
 
         String toolName = INTENT_TOOL_MAP.get(context.getIntent());
         if (toolName == null) {
@@ -159,6 +174,87 @@ public class ToolSpecialist implements ChatNode {
         log.debug("工具调用完成：session={} tool={} success={}",
                 context.getSessionId(), toolName, result.isSuccess());
         return ChatState.CONFIDENCE_CHECK;
+    }
+
+    /* ==================== 模型自主选工具（Function Calling） ==================== */
+
+    /**
+     * 模型自主选工具路径：执行循环、按结果分流到"回复 / 追问 / 失败"。
+     *
+     * <p>结果分流与查表路径的分支一一对应（下游节点只认 ToolResult 与置信度，
+     * 不关心工具是怎么被调起来的）：
+     * <ul>
+     *     <li>任一工具查到数据 → 聚合为一条成功的 ToolResult，置信度 1
+     *         （工具是确定性查询，与查表路径同一口径）</li>
+     *     <li>全部未查到但有追问线索（缺参数/没查到）→ 走既有追问分支
+     *         （含列候选与挂起），工具自拟的话术优先</li>
+     *     <li>纯失败 → 与查表路径的异常分支一致，置信度 0 交给置信度校验</li>
+     * </ul>
+     *
+     * @return 处理完成返回目标状态；模型路径没有产出（应降级查表）返回 null
+     */
+    private ChatState executeWithModel(ChatContext context) {
+        ModelToolCallingService.Outcome outcome = modelToolCallingService.run(context);
+        if (outcome == null) {
+            log.debug("模型选工具未产出结果，降级为意图查表：session={} intent={}",
+                    context.getSessionId(), context.getIntent());
+            return null;
+        }
+
+        if (outcome.anySuccess()) {
+            context.setToolResult(aggregate(outcome));
+            context.setAnswerConfidence(BigDecimal.ONE);
+            return ChatState.CONFIDENCE_CHECK;
+        }
+
+        ToolResult candidate = outcome.clarifyCandidate();
+        context.setToolResult(candidate);
+        if (candidate.needsClarification()) {
+            context.setClarificationHint(buildClarification(context, toolInvokerProvider.getIfAvailable(),
+                    candidate.getToolName(), candidate.getMissingParams(), candidate.getClarifyHint()));
+            context.setAnswerConfidence(BigDecimal.ZERO);
+            return ChatState.CONFIDENCE_CHECK;
+        }
+
+        context.setErrorMessage(candidate.getErrorMessage());
+        context.setAnswerConfidence(BigDecimal.ZERO);
+        return ChatState.CONFIDENCE_CHECK;
+    }
+
+    /**
+     * 把多次工具调用聚合成一条成功的 ToolResult。
+     *
+     * <p>摘要优先用模型的事实汇总（它是面向回复节点组织过的），汇总为空时
+     * 退回各工具自拟摘要的拼接。结构化数据按工具顺序合并、后到覆盖先到 ——
+     * data 当前没有下游消费方（预留给接口层渲染订单卡片之类），
+     * 真要消费时跨工具的同名字段（如 order 与 logistics 都有 status）
+     * 应改为按工具名加前缀，这里先把语义写清楚。
+     */
+    private ToolResult aggregate(ModelToolCallingService.Outcome outcome) {
+        List<String> names = outcome.results().stream()
+                .map(ToolResult::getToolName)
+                .distinct()
+                .toList();
+
+        String summary;
+        if (StringUtils.hasText(outcome.digest())) {
+            summary = outcome.digest().trim();
+        } else {
+            summary = outcome.results().stream()
+                    .filter(ToolResult::isSuccess)
+                    .map(ToolResult::getSummary)
+                    .filter(StringUtils::hasText)
+                    .reduce((a, b) -> a + "\n\n" + b)
+                    .orElse("已为您查询。");
+        }
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        for (ToolResult result : outcome.results()) {
+            if (result.isSuccess() && result.getData() != null) {
+                data.putAll(result.getData());
+            }
+        }
+        return ToolResult.ok(String.join("+", names), summary, data);
     }
 
     /* ==================== 追问 ==================== */

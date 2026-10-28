@@ -5,6 +5,7 @@ import com.mewchat.common.exception.BizException;
 import com.mewchat.common.result.ResultCode;
 import com.mewchat.common.security.AuthenticatedUser;
 import com.mewchat.common.security.TokenCodec;
+import com.mewchat.config.AuthProperties;
 import com.mewchat.dao.mysql.entity.User;
 import com.mewchat.dao.mysql.mapper.UserMapper;
 import org.slf4j.Logger;
@@ -60,10 +61,17 @@ public class AuthService {
 
     private final PasswordEncoder passwordEncoder;
 
-    public AuthService(UserMapper userMapper, TokenCodec tokenCodec, PasswordEncoder passwordEncoder) {
+    private final RefreshTokenService refreshTokenService;
+
+    private final AuthProperties authProperties;
+
+    public AuthService(UserMapper userMapper, TokenCodec tokenCodec, PasswordEncoder passwordEncoder,
+                       RefreshTokenService refreshTokenService, AuthProperties authProperties) {
         this.userMapper = userMapper;
         this.tokenCodec = tokenCodec;
         this.passwordEncoder = passwordEncoder;
+        this.refreshTokenService = refreshTokenService;
+        this.authProperties = authProperties;
     }
 
     /**
@@ -108,8 +116,70 @@ public class AuthService {
 
         TokenCodec.AuthToken issued = tokenCodec.issue(user.getId(), user.getUsername(), userType);
         log.info("登录成功：userId={} username={} userType={}", user.getId(), user.getUsername(), userType);
-        return new LoginResult(issued.token(), issued.expiresAt(), user.getId(),
-                user.getUsername(), user.getNickname());
+
+        // 刷新令牌与访问令牌同时签发：前者可吊销、负责"续期与登出"，
+        // 后者无状态、负责"每个请求的身份证明"。分工见 RefreshTokenService 注释
+        LocalDateTime refreshExpire = LocalDateTime.now().plusDays(authProperties.getRefreshTokenDays());
+        String refreshToken = refreshTokenService.issue(user.getId(), refreshExpire);
+
+        return new LoginResult(issued.token(), issued.expiresAt(), refreshToken,
+                refreshExpire, user.getId(), user.getUsername(), user.getNickname());
+    }
+
+    /**
+     * 用刷新令牌换新令牌对（旋转）。
+     *
+     * <p>旧刷新令牌一次性作废、签发新的刷新令牌与访问令牌。
+     * 归属用户已不存在或被禁用时拒绝刷新 —— 禁用必须能终止续期，
+     * 否则"禁用账号"对还揣着有效刷新令牌的人不起作用。
+     *
+     * @param refreshToken 刷新令牌原文
+     * @return 新的令牌对与用户展示信息
+     * @throws BizException 刷新令牌无效/已旋转/已登出/已过期，或账号不可用时抛出
+     */
+    public LoginResult refresh(String refreshToken) {
+        if (!StringUtils.hasText(refreshToken)) {
+            throw new BizException(ResultCode.PARAM_INVALID, "refreshToken 不能为空");
+        }
+
+        Long userId = refreshTokenService.rotate(refreshToken,
+                LocalDateTime.now().plusDays(authProperties.getRefreshTokenDays()));
+
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            log.warn("刷新被拒：用户不存在 userId={}", userId);
+            throw new BizException(ResultCode.UNAUTHORIZED, "登录状态已过期，请重新登录");
+        }
+        if (user.getStatus() != null && user.getStatus() == STATUS_DISABLED) {
+            log.warn("刷新被拒：账号已被禁用 userId={}", userId);
+            throw new BizException(ResultCode.FORBIDDEN, "账号已被禁用，请联系管理员");
+        }
+
+        int userType = user.getUserType() == null
+                ? AuthenticatedUser.TYPE_CUSTOMER
+                : user.getUserType();
+        TokenCodec.AuthToken issued = tokenCodec.issue(user.getId(), user.getUsername(), userType);
+        log.info("刷新令牌旋转成功：userId={}", user.getId());
+
+        LocalDateTime refreshExpire = LocalDateTime.now().plusDays(authProperties.getRefreshTokenDays());
+        String newRefreshToken = refreshTokenService.issue(user.getId(), refreshExpire);
+        return new LoginResult(issued.token(), issued.expiresAt(), newRefreshToken,
+                refreshExpire, user.getId(), user.getUsername(), user.getNickname());
+    }
+
+    /**
+     * 登出：吊销刷新令牌（幂等）。
+     *
+     * <p>访问令牌是<b>吊销不了的</b>（无状态，见 TokenCodec 的已知取舍），
+     * 登出后它在有效期内仍可用。这是刻意接受的取舍：登出主要保障"不再能续期"，
+     * 把长期凭据的暴露窗口从"7 天"收窄到"访问令牌剩余有效期（默认至多 2 小时）"。
+     * 需要立即生效的强制下线仍然只有换密钥一条路。
+     *
+     * @param refreshToken 刷新令牌原文，可为空（幂等）
+     */
+    public void logout(String refreshToken) {
+        boolean revoked = refreshTokenService.revoke(refreshToken);
+        log.info("登出：{}（幂等）", revoked ? "已吊销刷新令牌" : "无有效刷新令牌");
     }
 
     /**
@@ -133,19 +203,23 @@ public class AuthService {
     }
 
     /**
-     * 登录结果。
+     * 登录/刷新的结果。
      *
      * <p>只带接口层需要的东西，不把 {@link User} 实体透出去 ——
      * 实体里有密码哈希，一旦被序列化到响应里就是一次凭据泄露。
      *
-     * @param token     访问令牌
-     * @param expiresAt 令牌过期时间
-     * @param userId    用户ID
-     * @param username  用户名
-     * @param nickname  昵称
+     * @param token             访问令牌
+     * @param expiresAt         访问令牌过期时间
+     * @param refreshToken      刷新令牌（可吊销，用于静默续期与登出）
+     * @param refreshExpiresAt  刷新令牌过期时间
+     * @param userId            用户ID
+     * @param username          用户名
+     * @param nickname          昵称
      */
     public record LoginResult(String token,
                               Instant expiresAt,
+                              String refreshToken,
+                              LocalDateTime refreshExpiresAt,
                               Long userId,
                               String username,
                               String nickname) {

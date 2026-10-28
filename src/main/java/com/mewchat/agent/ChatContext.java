@@ -127,6 +127,53 @@ public class ChatContext {
     private ToolResult toolResult;
 
     /**
+     * 多意图拆解：待处理的子意图队列。
+     *
+     * <p>多意图模式（见 {@code mewchat.agent.multi-intent}）下，意图识别把一句话里的
+     * 多个问题拆成子意图：第一条直接写入 {@link #intent} 等字段按正常流程走，
+     * 余下的进本队列。每聚合完一段（{@code AGGREGATE} 节点）弹出下一条，
+     * 直到队列清空 —— 这就是"受控环"的燃料：环的圈数由队列长度决定，
+     * 而队列长度在意图识别时就被 {@code multi-intent-max-sub-intents} 封顶。
+     * 单意图轮本队列恒为空，全部多意图分支都不会被走到。
+     */
+    @Builder.Default
+    private java.util.Deque<SubIntent> pendingSubIntents = new java.util.ArrayDeque<>();
+
+    /**
+     * 本轮是否处于多意图聚合流程。
+     *
+     * <p>由意图识别节点在拆出多条子意图时置位。回复/追问/兜底节点据此决定
+     * "本段之后去 AGGREGATE 还是直接 END" —— <b>必须用这个标志而不是
+     * "队列是否还有剩余"</b>：最后一段产出时队列已空，若按队列判断会直接 END、
+     * 跳过聚合，各段永远拼不起来（接线测试抓出的缺陷）。
+     * 单意图轮恒为 false，多意图分支全部不可达。
+     */
+    @Builder.Default
+    private boolean multiIntentTurn = false;
+
+    /**
+     * 多意图聚合：已完成的各段回复文本。
+     *
+     * <p>每段（REPLY/CLARIFY/FALLBACK）产出后由聚合节点收割到本列表，
+     * 并把 {@link #replyText} 清空 —— 不清空的话下一段的生成节点会覆盖它，
+     * 前一段的内容就丢了。
+     */
+    @Builder.Default
+    private List<String> replySegments = new ArrayList<>();
+
+    /** 多意图聚合：各段的产出终态（与 {@link #replySegments} 一一对应） */
+    @Builder.Default
+    private List<ChatState> segmentStates = new ArrayList<>();
+
+    /** 多意图聚合：各段的意图置信度（与 {@link #replySegments} 一一对应，聚合时取最小值） */
+    @Builder.Default
+    private List<BigDecimal> segmentIntentConfidences = new ArrayList<>();
+
+    /** 多意图聚合：各段的回答置信度（与 {@link #replySegments} 一一对应，聚合时取最小值） */
+    @Builder.Default
+    private List<BigDecimal> segmentAnswerConfidences = new ArrayList<>();
+
+    /**
      * 本轮回答的置信度，由处理节点写入。
      *
      * <p>知识类取召回片段的最优得分；工具类成功为 1、失败为 0。
@@ -250,5 +297,17 @@ public class ChatContext {
      */
     public boolean toolNeedsClarification() {
         return toolResult != null && toolResult.needsClarification();
+    }
+
+    /**
+     * 是否还有待处理的子意图。
+     *
+     * <p>回复/追问/兜底节点用它决定"本轮到此结束（END）还是去聚合下一段（AGGREGATE）"，
+     * 单意图轮恒为 false，行为与多意图特性引入前完全一致。
+     *
+     * @return true 表示多意图轮还有剩余子意图
+     */
+    public boolean hasQueuedSubIntents() {
+        return !pendingSubIntents.isEmpty();
     }
 }

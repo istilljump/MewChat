@@ -1,5 +1,6 @@
 package com.mewchat.tool.refund;
 
+import com.mewchat.service.BusinessDataService;
 import com.mewchat.tool.BusinessTool;
 import com.mewchat.tool.ToolResult;
 import dev.langchain4j.agent.tool.P;
@@ -30,10 +31,10 @@ import java.util.Map;
  * 若要改成"类目明确时走查表、其余走检索"，在 {@code ToolSpecialist} 的
  * "意图 → 工具名"映射里加一行即可，工具层无需改动。
  *
- * <p><b>当前是进程内模拟政策表</b>（{@link #POLICIES}）：真实场景下这类规则通常维护在
- * 管理后台（落库）或 CMS 里，由运营调整。接入时替换 {@link #queryPolicy} 的取数实现，
- * 并且要记得<b>政策变更要能即时生效</b> —— 政策表被缓存住而运营改了规则，
- * 客服就会照旧规则答复用户，这是会产生客诉的错误。
+ * <p><b>数据来自 {@link BusinessDataService}</b>（表 {@code refund_policy}，见 {@code sql/08}），
+ * 且<b>每次调用现读、不做缓存</b>：政策由运营维护、变更必须即时生效 ——
+ * 政策表被缓存住而运营改了规则，客服就会照旧规则答复用户，
+ * 这是会产生客诉的错误（阶段 6 起就把这条写在了约定里）。
  *
  * @author MewChat
  */
@@ -47,14 +48,6 @@ public class RefundTool implements BusinessTool {
 
     /** 未收录具体类目时使用的通用政策键 */
     private static final String GENERAL_CATEGORY = "通用";
-
-    /**
-     * 模拟退款政策表，键为商品类目。
-     *
-     * <p>刻意包含一个"不支持无理由退货"的类目（生鲜）：只造支持退货的样例，
-     * 会让"不支持"这条分支既写不对也测不到，而它恰恰是最容易答错、最容易引起纠纷的一类问题。
-     */
-    private static final Map<String, RefundPolicy> POLICIES = buildPolicies();
 
     /**
      * 类目检索词到标准类目的映射。
@@ -81,6 +74,13 @@ public class RefundTool implements BusinessTool {
                     .sorted(Comparator.comparingInt(
                             (Map.Entry<String, String> entry) -> entry.getKey().length()).reversed())
                     .toList();
+
+    /** 政策取数入口（每次现读，见类注释的"政策变更即时生效"） */
+    private final BusinessDataService businessDataService;
+
+    public RefundTool(BusinessDataService businessDataService) {
+        this.businessDataService = businessDataService;
+    }
 
     @Override
     public String name() {
@@ -126,20 +126,59 @@ public class RefundTool implements BusinessTool {
         }
 
         String raw = query.category().trim();
-        RefundPolicy exact = POLICIES.get(raw);
+        Map<String, RefundPolicy> policies = loadPolicies();
+
+        RefundPolicy exact = policies.get(raw);
         if (exact != null) {
             return exact;
         }
 
         String aliased = matchByAlias(raw);
         if (aliased != null) {
-            RefundPolicy policy = POLICIES.get(aliased);
+            RefundPolicy policy = policies.get(aliased);
             if (policy != null) {
                 return policy;
             }
         }
 
-        return POLICIES.get(GENERAL_CATEGORY);
+        return policies.get(GENERAL_CATEGORY);
+    }
+
+    /**
+     * 取全量政策并转成"类目 → 出参"的表。
+     *
+     * <p>每次调用现读：别名匹配要在整个政策表上找，单条按类目查满足不了，
+     * 而演示规模下全表读的成本可忽略；换来的是运营改完政策立刻生效。
+     *
+     * @return 类目到政策出参的映射，政策表为空时是空映射
+     */
+    private Map<String, RefundPolicy> loadPolicies() {
+        Map<String, RefundPolicy> policies = new LinkedHashMap<>();
+        for (com.mewchat.dao.mysql.entity.RefundPolicy entity : businessDataService.listAllRefundPolicies()) {
+            policies.put(entity.getCategory(), fromEntity(entity));
+        }
+        return policies;
+    }
+
+    /**
+     * 数据库实体 → 工具出参。
+     *
+     * <p>转换放在工具层而不是 service，理由同订单工具：出参是工具的契约表达。
+     * {@code matched} 不落库 —— 它表示"这次查询有没有命中专属政策"，
+     * 是查询行为的结果而不是政策本身的属性；按约定类目名为
+     * {@link #GENERAL_CATEGORY} 的行即兜底行。
+     *
+     * @param entity 数据库政策实体
+     * @return 工具出参对象
+     */
+    private static RefundPolicy fromEntity(com.mewchat.dao.mysql.entity.RefundPolicy entity) {
+        return new RefundPolicy(
+                entity.getCategory(),
+                !GENERAL_CATEGORY.equals(entity.getCategory()),
+                entity.getReturnWindowDays() == null ? 0 : entity.getReturnWindowDays(),
+                entity.getExchangeWindowDays() == null ? 0 : entity.getExchangeWindowDays(),
+                entity.getRules() == null ? List.of() : List.copyOf(entity.getRules()),
+                entity.getNote());
     }
 
     /**
@@ -160,60 +199,7 @@ public class RefundTool implements BusinessTool {
         return null;
     }
 
-    /* ==================== 模拟政策数据 ==================== */
-
-    /**
-     * 构造模拟退款政策表。
-     *
-     * @return 不可变的政策表
-     */
-    private static Map<String, RefundPolicy> buildPolicies() {
-        Map<String, RefundPolicy> policies = new LinkedHashMap<>();
-
-        policies.put("数码配件", new RefundPolicy(
-                "数码配件", true, 7, 15,
-                List.of("支持 7 天无理由退货，商品需保持外观完好、配件与包装齐全",
-                        "已激活或已拆封的手机、平板等设备不支持无理由退货",
-                        "因质量问题退换货，往返运费由平台承担"),
-                "人为损坏、进液、私自拆机不在退换范围内。"));
-
-        policies.put("服饰鞋包", new RefundPolicy(
-                "服饰鞋包", true, 7, 15,
-                List.of("支持 7 天无理由退货，吊牌需完整、未洗涤未穿着",
-                        "内衣、袜子等贴身类商品因卫生要求不支持无理由退货",
-                        "换货运费：非质量问题时由买家承担"),
-                "尺码不合属于无理由退货范围，可在订单页直接申请。"));
-
-        policies.put("美妆个护", new RefundPolicy(
-                "美妆个护", true, 7, 7,
-                List.of("未拆封商品支持 7 天无理由退货",
-                        "已拆封的化妆品、洗护用品因卫生要求不支持无理由退货",
-                        "商品与描述不符、破损、临期等问题可全额退款"),
-                "开封后出现过敏等不适，请保留就医凭证联系客服处理。"));
-
-        policies.put("食品生鲜", new RefundPolicy(
-                "食品生鲜", true, 0, 0,
-                List.of("生鲜类商品不支持 7 天无理由退货",
-                        "签收后 24 小时内发现变质、缺斤少两可申请质量问题退款",
-                        "需提供商品与面单合照作为凭证"),
-                "生鲜商品请尽量当面签收验货，签收后超过 24 小时不再受理质量异议。"));
-
-        policies.put("家具家电", new RefundPolicy(
-                "家具家电", true, 7, 30,
-                List.of("支持 7 天无理由退货，但需未安装、未使用且包装完好",
-                        "已安装的大家电退换需工程师上门检测后判定",
-                        "大件商品退换由平台安排上门取件，非质量问题运费由买家承担"),
-                "涉及上门安装的商品，请勿自行拆箱，以免影响退换。"));
-
-        policies.put(GENERAL_CATEGORY, new RefundPolicy(
-                GENERAL_CATEGORY, false, 7, 15,
-                List.of("支持 7 天无理由退货，自签收之日起算，商品需不影响二次销售",
-                        "定制类商品、已拆封的数字化商品、个人护理用品不支持无理由退货",
-                        "因质量问题产生的退换货运费由平台承担"),
-                "不确定商品是否支持无理由退货时，可直接提供订单号由客服核实。"));
-
-        return Collections.unmodifiableMap(policies);
-    }
+    /* ==================== 类目检索词 ==================== */
 
     /**
      * 构造类目检索词映射。

@@ -2,10 +2,12 @@ package com.mewchat.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mewchat.agent.memory.ChatMemoryService;
+import com.mewchat.agent.specialist.ModelToolCallingService;
 import com.mewchat.agent.specialist.RagSpecialist;
 import com.mewchat.agent.specialist.ToolSpecialist;
 import com.mewchat.agent.supervisor.ChatSupervisor;
 import com.mewchat.agent.supervisor.IntentRecognizer;
+import com.mewchat.agent.supervisor.node.AggregateNode;
 import com.mewchat.agent.supervisor.node.ClarifyNode;
 import com.mewchat.agent.supervisor.node.ConfidenceCheckNode;
 import com.mewchat.agent.supervisor.node.ContextLoadNode;
@@ -40,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -48,6 +51,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -85,6 +89,26 @@ class ChatFlowWiringTest {
              "rewrittenQuery":"查询订单 MC202409240001","params":{"orderNo":"MC202409240001"}}
             """;
 
+    /** 多意图模式的双子意图输出：订单查询 + 商品查询 */
+    private static final String MULTI_INTENT_ORDER_AND_PRODUCT = """
+            {"intents":[
+              {"intent":"ORDER_QUERY","confidence":0.90,
+               "rewrittenQuery":"查询订单 MC202409240001 的状态","params":{"orderNo":"MC202409240001"}},
+              {"intent":"PRODUCT_QUERY","confidence":0.88,
+               "rewrittenQuery":"耳机多少钱","params":{"productName":"耳机"}}
+            ]}
+            """;
+
+    /** 多意图模式的双子意图输出：订单查询（能答）+ 知识问答（无召回，会兜底） */
+    private static final String MULTI_INTENT_ORDER_AND_KNOWLEDGE = """
+            {"intents":[
+              {"intent":"ORDER_QUERY","confidence":0.90,
+               "rewrittenQuery":"查询订单 MC202409240001 的状态","params":{"orderNo":"MC202409240001"}},
+              {"intent":"KNOWLEDGE_QA","confidence":0.92,
+               "rewrittenQuery":"开发票的规则是什么","params":{}}
+            ]}
+            """;
+
     private StubChatModel chatModel;
 
     private ChatMemoryService chatMemoryService;
@@ -103,8 +127,15 @@ class ChatFlowWiringTest {
 
     private ChatSupervisor supervisor;
 
+    /** 编排配置：多意图用例在用例内打开开关 */
+    private AgentProperties agentProperties;
+
+    /** 取消信号用例的共享标志（监听器匿名类与断言之间传递） */
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
     @BeforeEach
     void setUp() {
+        cancelled.set(false);
         chatModel = new StubChatModel();
         chatMemoryService = mock(ChatMemoryService.class);
         guardrailService = mock(GuardrailService.class);
@@ -113,6 +144,7 @@ class ChatFlowWiringTest {
         ticketService = mock(TicketService.class);
         retriever = new StubKnowledgeRetriever();
         toolInvoker = new StubToolInvoker();
+        agentProperties = new AgentProperties();
 
         // 默认：指代消解原样返回，护栏不命中，检索无召回
         given(chatMemoryService.resolveReferences(anyString(), anyString()))
@@ -126,7 +158,7 @@ class ChatFlowWiringTest {
                 lowConfidenceQuestionService,
                 ticketService,
                 mock(LangfuseClient.class),
-                new AgentProperties());
+                agentProperties);
     }
 
     /* ==================== 用例 ==================== */
@@ -245,6 +277,130 @@ class ChatFlowWiringTest {
         verify(ticketService).createFallbackTicket(anyString(), anyLong(), anyString(), any());
     }
 
+    /**
+     * 多意图轮：两个子意图经受控环逐条执行、聚合为一条回复。
+     *
+     * <p>轨迹断言的是整条环：第一个子意图走完 ROUTE→TOOL_CALL→CONFIDENCE_CHECK→REPLY
+     * 后进 AGGREGATE，回 ROUTE 处理第二条，最后一段聚合完到 END。
+     * 聚合内容是各段按序拼接 —— 用户看到的是"两个问题的回答都在一条回复里"。
+     */
+    @Test
+    void multiIntentShouldLoopThroughSubIntentsAndAggregate() {
+        agentProperties.setMultiIntent(true);
+        chatModel.setIntentResponse(MULTI_INTENT_ORDER_AND_PRODUCT);
+        toolInvoker.setResult(ToolResult.ok("order_query", "订单已发货", Map.of("orderNo", "MC202409240001")));
+
+        ChatReply reply = supervisor.process(newSessionId(), 1L, "帮我查订单 MC202409240001，再看看耳机多少钱");
+
+        assertThat(reply.getVisitedStates()).containsExactly(
+                ChatState.CONTEXT_LOAD,
+                ChatState.GUARD_CHECK,
+                ChatState.RESUME_CHECK,
+                ChatState.INTENT_RECOGNIZE,
+                ChatState.ROUTE,
+                ChatState.TOOL_CALL,
+                ChatState.CONFIDENCE_CHECK,
+                ChatState.REPLY,
+                ChatState.AGGREGATE,
+                ChatState.ROUTE,
+                ChatState.TOOL_CALL,
+                ChatState.CONFIDENCE_CHECK,
+                ChatState.REPLY,
+                ChatState.AGGREGATE,
+                ChatState.END);
+        assertThat(reply.getFinalState()).isEqualTo(ChatState.REPLY);
+        assertThat(reply.getContent())
+                .as("两段回复都应在最终回复里")
+                .isEqualTo(StubChatModel.REPLY_TEXT + "\n\n" + StubChatModel.REPLY_TEXT);
+        assertThat(reply.isHandoffRequired()).isFalse();
+
+        verify(lowConfidenceQuestionService, never()).record(anyString(), any(), anyString());
+        verify(ticketService, never()).createFallbackTicket(anyString(), any(), anyString(), any());
+    }
+
+    /**
+     * 多意图轮里一段兜底：已答段落保留、整轮按兜底收尾（建单 + 进问题池各一次）。
+     *
+     * <p>第二段没答上来不等于白跑 —— 用户已经拿到第一段的答案，
+     * 同时"另一部分没答上"必须如实转人工、必须进飞轮。
+     * 建单/进池只发生一次（聚合后按整轮收尾），而不是每个兜底段一次。
+     */
+    @Test
+    void multiIntentWithFallbackSegmentShouldAggregateAndStillHandoff() {
+        agentProperties.setMultiIntent(true);
+        chatModel.setIntentResponse(MULTI_INTENT_ORDER_AND_KNOWLEDGE);
+        toolInvoker.setResult(ToolResult.ok("order_query", "订单已发货", Map.of("orderNo", "MC202409240001")));
+        retriever.setChunks(List.of());
+
+        ChatReply reply = supervisor.process(newSessionId(), 1L, "查订单 MC202409240001，另外你们支持开发票吗");
+
+        assertThat(reply.getVisitedStates()).containsExactly(
+                ChatState.CONTEXT_LOAD,
+                ChatState.GUARD_CHECK,
+                ChatState.RESUME_CHECK,
+                ChatState.INTENT_RECOGNIZE,
+                ChatState.ROUTE,
+                ChatState.TOOL_CALL,
+                ChatState.CONFIDENCE_CHECK,
+                ChatState.REPLY,
+                ChatState.AGGREGATE,
+                ChatState.ROUTE,
+                ChatState.RAG_RETRIEVE,
+                ChatState.CONFIDENCE_CHECK,
+                ChatState.FALLBACK,
+                ChatState.AGGREGATE,
+                ChatState.END);
+        assertThat(reply.getFinalState())
+                .as("有任何一段兜底，整轮就按兜底收尾")
+                .isEqualTo(ChatState.FALLBACK);
+        assertThat(reply.isHandoffRequired()).isTrue();
+        assertThat(reply.getContent())
+                .as("已答出的段落不能因为另一段兜底而丢失")
+                .contains(StubChatModel.REPLY_TEXT)
+                .contains("知识库中没有找到可靠答案");
+
+        verify(lowConfidenceQuestionService, times(1)).record(anyString(), any(), anyString());
+        verify(ticketService, times(1)).createFallbackTicket(anyString(), anyLong(), anyString(), any());
+    }
+
+    /**
+     * 客户端断开（点停止/关页面）必须中止后续流程：不生成回复、不建单、不进问题池。
+     *
+     * <p>"用户主动停止"不是"系统答不上来"—— 若把它当兜底处理，会凭空多一张工单、
+     * 问题池多一条脏数据；而为一个已经离开的人继续烧模型 token 同样是浪费。
+     * 监听器在第一个状态广播后置为已取消，断言流程只走了两个状态就被收住。
+     */
+    @Test
+    void clientDisconnectShouldAbortFlowWithoutFallback() {
+        // 第二个状态（GUARD_CHECK）广播后即"离开"：护栏还没执行就被收住
+        ChatStreamListener listener = new ChatStreamListener() {
+            @Override
+            public void onState(ChatState state) {
+                if (state == ChatState.GUARD_CHECK) {
+                    cancelled.set(true);
+                }
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return cancelled.get();
+            }
+        };
+
+        ChatReply reply = supervisor.processStream(newSessionId(), 1L, "七天无理由退货怎么操作", listener);
+
+        assertThat(reply.getVisitedStates()).containsExactly(
+                ChatState.CONTEXT_LOAD,
+                ChatState.GUARD_CHECK,
+                ChatState.END);
+        assertThat(reply.getFinalState()).isEqualTo(ChatState.GUARD_CHECK);
+        assertThat(reply.isHandoffRequired()).isFalse();
+        // 没有回复内容、没有兜底痕迹：不建单、不进问题池
+        assertThat(reply.getContent()).isNull();
+        verify(lowConfidenceQuestionService, never()).record(anyString(), any(), anyString());
+        verify(ticketService, never()).createFallbackTicket(anyString(), any(), anyString(), any());
+    }
+
     /* ==================== 辅助 ==================== */
 
     /**
@@ -260,15 +416,17 @@ class ChatFlowWiringTest {
                 new ContextLoadNode(chatMemoryService),
                 new GuardCheckNode(guardrailService),
                 new ResumeCheckNode(conversationService, new AgentProperties()),
-                new IntentRecognizeNode(new IntentRecognizer(chatModel, new ObjectMapper())),
+                new IntentRecognizeNode(new IntentRecognizer(chatModel, new ObjectMapper()), agentProperties),
                 new RouteNode(),
                 new RagSpecialist(providerOf(retriever), new RagProperties()),
-                new ToolSpecialist(providerOf(toolInvoker), conversationService),
+                new ToolSpecialist(providerOf(toolInvoker), conversationService,
+                        new ModelToolCallingService(null, null, new AgentProperties())),
                 new ConfidenceCheckNode(new AgentProperties()),
                 new ClarifyNode(),
                 new RejectNode(guardrailService),
                 new ReplyNode(chatModel, new StubStreamingChatModel(), new LlmProperties(), new RagProperties()),
-                new FallbackNode());
+                new FallbackNode(),
+                new AggregateNode());
     }
 
     /**

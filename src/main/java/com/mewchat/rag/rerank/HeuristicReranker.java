@@ -2,7 +2,6 @@ package com.mewchat.rag.rerank;
 
 import com.mewchat.rag.retrieval.ChunkTokenizer;
 import com.mewchat.rag.retrieval.RetrievedChunk;
-import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 
 import java.util.Comparator;
@@ -22,9 +21,11 @@ import java.util.List;
  *
  * <p>三项加权后重新归一化到 0~1，供置信度计算与前端展示使用。
  *
+ * <p>不标 {@code @Component}：由 {@code RerankConfig} 按
+ * {@code mewchat.rag.rerank.mode} 统一装配（与 {@code LlmReranker} 二选一）。
+ *
  * @author MewChat
  */
-@Component
 public class HeuristicReranker implements Reranker {
 
     /** 融合分权重 */

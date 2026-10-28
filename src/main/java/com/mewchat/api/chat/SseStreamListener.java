@@ -54,6 +54,16 @@ public class SseStreamListener implements ChatStreamListener {
     /** 是否已推送过文本片段 */
     private boolean fragmentDelivered;
 
+    /**
+     * 已经作为片段推送出去的正文。
+     *
+     * <p>收尾时用它判断"权威结果里还有哪部分没送达"。多意图轮里这个字段
+     * 显出必要性：第一段流式推送了，第二段（追问/兜底的固定话术）不经过模型、
+     * 一个片段都不会有 —— 若只看 {@link #fragmentDelivered}（推没推过），
+     * 第二段就永远到不了客户端的气泡里，要等 done 替换才现身。
+     */
+    private final StringBuilder streamedText = new StringBuilder();
+
     /** 连接是否已失效：客户端断开，或本轮已正常结束 */
     private boolean closed;
 
@@ -69,6 +79,34 @@ public class SseStreamListener implements ChatStreamListener {
 
     public SseStreamListener(SseEmitter emitter) {
         this.emitter = emitter;
+        // 容器的三个生命周期回调都归约为"连接失效"：客户端断开/停止时，
+        // 若本轮还没有任何推送（比如还在意图识别），send 不会被触发、closed 无从置位，
+        // 取消信号就会漏掉 —— 这三个回调补上了"没有推送也能感知断开"的缺口
+        emitter.onCompletion(() -> markClosed());
+        emitter.onTimeout(this::markClosed);
+        emitter.onError(e -> markClosed());
+    }
+
+    /**
+     * 标记连接失效（供容器的生命周期回调调用）。
+     */
+    private void markClosed() {
+        synchronized (sendLock) {
+            closed = true;
+        }
+    }
+
+    /**
+     * 用户是否已离开。
+     *
+     * <p>{@code closed} 同时覆盖"推送失败感知到的断开"与"容器回调感知到的断开"，
+     * 而 finish() 之后的流程早已结束、不会再有人查询取消信号 —— 因此 closed 即"已取消"。
+     */
+    @Override
+    public boolean isCancelled() {
+        synchronized (sendLock) {
+            return closed;
+        }
     }
 
     /**
@@ -92,6 +130,7 @@ public class SseStreamListener implements ChatStreamListener {
                 return;
             }
             fragmentDelivered = true;
+            streamedText.append(fragment);
         }
         send(ChatConstants.SSE_EVENT_MESSAGE, Result.success(fragment));
     }
@@ -103,15 +142,30 @@ public class SseStreamListener implements ChatStreamListener {
      * 追问与兜底的话术是固定文本、根本不经过模型，因此一个片段都不会有，
      * 若只发 {@code done}，前端就会渲染出一个空气泡。
      *
+     * <p>补齐的口径是<b>"没送达的部分"</b>而不是"整段或没有"：
+     * 一段都没送达（固定话术轮）就补整段；送达了一部分（多意图轮先流式了
+     * 第一段、第二段是固定话术）就只补剩余的后缀 —— 前端按片段追加气泡，
+     * 后缀追加后恰好拼出完整正文。只有当权威内容与已推送部分不是
+     * 前缀关系（生成失败后换成兜底话术等）时才不补：此时推后缀会拼出乱序文本，
+     * 由 {@code done} 的权威替换兜底（见类注释的替换约定）。
+     *
      * @param reply 本轮结果
      */
     public void complete(ChatReply reply) {
-        boolean needFullText;
+        String undelivered = null;
         synchronized (sendLock) {
-            needFullText = !fragmentDelivered && !closed;
+            if (!closed && StringUtils.hasText(reply.getContent())) {
+                String content = reply.getContent();
+                String streamed = streamedText.toString();
+                if (streamed.isEmpty()) {
+                    undelivered = content;
+                } else if (content.length() > streamed.length() && content.startsWith(streamed)) {
+                    undelivered = content.substring(streamed.length());
+                }
+            }
         }
-        if (needFullText && StringUtils.hasText(reply.getContent())) {
-            send(ChatConstants.SSE_EVENT_MESSAGE, Result.success(reply.getContent()));
+        if (undelivered != null) {
+            send(ChatConstants.SSE_EVENT_MESSAGE, Result.success(undelivered));
         }
         send(ChatConstants.SSE_EVENT_DONE, Result.success(reply));
         finish();

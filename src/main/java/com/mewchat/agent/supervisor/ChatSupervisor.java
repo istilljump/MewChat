@@ -227,6 +227,24 @@ public class ChatSupervisor {
 
         try {
             while (!state.isTerminal()) {
+                // 用户已断开（关页面/点停止）就不再执行任何节点：后面的补检索、回复生成、
+                // 兜底建单全是为一个已经离开的人做的。已生成的部分照常落库（用户刷新可见），
+                // 但不建单、不进低置信度问题池 —— "用户主动停止"不是"系统答不上来"，
+                // 把它当兜底记进飞轮是在污染补知识的数据
+                if (context.getStreamListener() != null && context.getStreamListener().isCancelled()) {
+                    log.info("客户端已断开，中止后续流程：session={} 已走轨迹={}",
+                            context.getSessionId(), context.getVisitedStates());
+                    context.setErrorMessage("用户已停止生成");
+                    // 终态记录为"被打断的那个状态"：finalState 的字段默认值是 CONTEXT_LOAD
+                    // （不是 null，判空在这里形同虚设），而带取消信号的轮次必然还没走到
+                    // "节点返回终态"的赋值 —— 直接取轨迹末位就是被中断处，
+                    // 它也保证不会是 FALLBACK（取消轮不建单、不进问题池）
+                    List<ChatState> visited = context.getVisitedStates();
+                    context.setFinalState(visited.get(visited.size() - 1));
+                    enterState(context, ChatState.END);
+                    return;
+                }
+
                 if (++steps > agentProperties.getMaxSteps()) {
                     throw new IllegalStateException("状态机步数超过上限 " + agentProperties.getMaxSteps()
                             + "，当前轨迹：" + context.getVisitedStates());
@@ -245,8 +263,14 @@ public class ChatSupervisor {
                 }
 
                 // 节点返回终态，说明是"当前这个节点"产出了本轮答案。
-                // 记录的是 state 而不是 next —— next 是 END，记录它没有意义
-                if (next.isTerminal()) {
+                // 多意图轮里产出一段后先去 AGGREGATE（非终态）：对那段而言同样是
+                // "产出已确定"的边界，在这里记录段的终态，聚合节点才能按
+                // "最差段"确定整轮终态。记录的是 state 而不是 next ——
+                // next 是 END/AGGREGATE，记录它们没有意义。
+                // 唯一的例外是 AGGREGATE 自己返回 END：它已经把整轮终态
+                // 计算成"最差段"，不能被覆盖成 AGGREGATE（对外语义里没有这个状态）
+                if ((next.isTerminal() && state != ChatState.AGGREGATE)
+                        || next == ChatState.AGGREGATE) {
                     context.setFinalState(state);
                 }
 

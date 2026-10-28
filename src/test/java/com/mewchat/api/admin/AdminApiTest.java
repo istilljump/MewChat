@@ -6,6 +6,7 @@ import com.mewchat.common.security.AuthenticatedUser;
 import com.mewchat.common.security.TokenCodec;
 import com.mewchat.dao.mysql.entity.Conversation;
 import com.mewchat.dao.mysql.entity.KnowledgeDocument;
+import com.mewchat.dao.mysql.entity.LowConfidenceQuestion;
 import com.mewchat.dao.mysql.entity.Message;
 import com.mewchat.dao.mysql.entity.MessageRefDoc;
 import com.mewchat.dao.mysql.entity.Ticket;
@@ -16,8 +17,13 @@ import com.mewchat.service.MessageService;
 import com.mewchat.service.LowConfidenceQuestionService;
 import com.mewchat.service.QuestionClusteringService;
 import com.mewchat.service.TicketService;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -38,6 +44,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -110,6 +117,10 @@ class AdminApiTest {
 
     @MockitoBean
     private LowConfidenceQuestionService questionService;
+
+    /** 起草服务的模型依赖：替身返回固定草稿文本，不打真实端点 */
+    @MockitoBean
+    private ChatModel chatModel;
 
     @BeforeEach
     void stubDefaults() {
@@ -478,6 +489,106 @@ class AdminApiTest {
                         .content("{}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(10001));
+    }
+
+    /* ==================== AI 起草（飞轮智能化） ==================== */
+
+    /**
+     * 起草接口只对管理员开放（analytics 治理面），客户被 403。
+     */
+    @Test
+    void draftShouldBeForbiddenForCustomer() throws Exception {
+        mockMvc.perform(post("/api/admin/analytics/questions/9/draft")
+                        .header(HttpHeaders.AUTHORIZATION,
+                                "Bearer " + token(AuthenticatedUser.TYPE_CUSTOMER, CUSTOMER_ID)))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * 起草返回可编辑的草稿（标题/正文/参考），且<b>绝不落库</b> ——
+     * 采纳与否由运营决定，这是本功能的安全边界。
+     */
+    @Test
+    void draftShouldReturnEditableDraftWithoutPersisting() throws Exception {
+        LowConfidenceQuestion question = new LowConfidenceQuestion();
+        question.setId(9L);
+        question.setQuestion("发票怎么开");
+        given(questionService.getById(9L)).willReturn(question);
+        given(chatModel.chat(ArgumentMatchers.<List<ChatMessage>>any()))
+                .willReturn(ChatResponse.builder()
+                        .aiMessage(AiMessage.from("标题：发票开具说明\n\n登录后申请。"))
+                        .build());
+
+        mockMvc.perform(post("/api/admin/analytics/questions/9/draft")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.title").value("发票开具说明"))
+                .andExpect(jsonPath("$.data.content").value("登录后申请。"));
+
+        // 草稿只读不写：入库必须走运营显式的录入接口
+        verify(ingestService, never()).ingest(any());
+    }
+
+    /**
+     * 问题不存在时报 10002，而不是生成一份没有主语的草稿。
+     */
+    @Test
+    void draftShouldRejectUnknownQuestion() throws Exception {
+        given(questionService.getById(404L)).willReturn(null);
+
+        mockMvc.perform(post("/api/admin/analytics/questions/404/draft")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken()))
+                .andExpect(jsonPath("$.code").value(10002));
+    }
+
+    /* ==================== 反馈质量看板 ==================== */
+
+    /**
+     * 按反馈筛选助手消息：返回提问原文 + 回答摘要，消息ID 按字符串传输（雪花ID 精度）。
+     */
+    @Test
+    void feedbackMessagesShouldReturnPagedList() throws Exception {
+        Message answer = new Message();
+        answer.setId(123L);
+        answer.setSessionId(SESSION_ID);
+        answer.setRole("assistant");
+        answer.setContent("这是回答");
+        answer.setFeedback(2);
+        answer.setFeedbackTime(LocalDateTime.of(2026, 10, 27, 10, 0));
+        Message question = new Message();
+        question.setRole("user");
+        question.setContent("发票怎么开");
+        given(messageService.pageByFeedback(eq(2), eq(1L), anyLong())).willReturn(pageOf(answer));
+        given(messageService.findPrecedingUserMessage(answer)).willReturn(question);
+
+        mockMvc.perform(get("/api/admin/analytics/feedback-messages?feedback=2")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records[0].messageId").value("123"))
+                .andExpect(jsonPath("$.data.records[0].question").value("发票怎么开"))
+                .andExpect(jsonPath("$.data.records[0].answer").value("这是回答"));
+    }
+
+    /**
+     * feedback 取值只能是 1/2：其它值是调用方的 bug，按参数不合法拒绝。
+     */
+    @Test
+    void feedbackMessagesShouldRejectInvalidFeedbackValue() throws Exception {
+        mockMvc.perform(get("/api/admin/analytics/feedback-messages?feedback=3")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken()))
+                .andExpect(jsonPath("$.code").value(10001));
+    }
+
+    /**
+     * 反馈看板挂在 conversations 工作面之下，客服也应可用；客户被 403。
+     */
+    @Test
+    void feedbackMessagesShouldBeForbiddenForCustomer() throws Exception {
+        mockMvc.perform(get("/api/admin/analytics/feedback-messages?feedback=2")
+                        .header(HttpHeaders.AUTHORIZATION,
+                                "Bearer " + token(AuthenticatedUser.TYPE_CUSTOMER, CUSTOMER_ID)))
+                .andExpect(status().isForbidden());
     }
 
     /* ==================== 辅助 ==================== */
